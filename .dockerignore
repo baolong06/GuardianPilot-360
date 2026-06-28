@@ -1,0 +1,63 @@
+# .dockerignore — GuardianPilot 360
+# Loại bỏ file không cần thiết khi build Docker image
+# Giảm build context từ ~250MB → ~50KB
+
+# ── Model files (mount qua volume, không bake vào image) ─────────────────────
+task_1/
+Task_3/
+Task_4/
+Task 2*/
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env/
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── IDE & OS ──────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs & output ─────────────────────────────────────────────────────────────
+logs/
+*.log
+*.jsonl
+guardian_pilot_audit.log
+
+# ── Data files (mount riêng) ──────────────────────────────────────────────────
+data/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+*.md
+docs/
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+*.ipynb
+.ipynb_checkpoints/
+
+# ── Distribution / packaging ──────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/

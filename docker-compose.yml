@@ -1,0 +1,115 @@
+# docker-compose.yml — GuardianPilot 360
+# ─────────────────────────────────────────
+# 3 profile sử dụng:
+#
+#   1. Chạy unit tests (không cần model, không cần GPU):
+#      docker compose run --rm test
+#
+#   2. Chạy trên video file (headless):
+#      docker compose run --rm video
+#
+#   3. Chạy real-time camera + GPU (Linux):
+#      docker compose run --rm camera
+# ─────────────────────────────────────────
+
+services:
+
+  # ────────────────────────────────────────
+  # SERVICE 1: Unit tests — không cần model, không cần GPU
+  # Dùng để CI/CD hoặc xác nhận logic sau khi clone repo
+  # ────────────────────────────────────────
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime          # build tới stage "runtime" thôi
+    image: guardian-pilot:latest
+    container_name: gp_test
+    command: test
+    environment:
+      - TF_CPP_MIN_LOG_LEVEL=3
+    # Không cần volume model vì tests mock data
+    profiles: []               # luôn available, không cần --profile
+
+  # ────────────────────────────────────────
+  # SERVICE 2: Chạy trên file video (headless — không cần màn hình)
+  # Đặt file video vào thư mục ./data/ rồi chạy
+  # ────────────────────────────────────────
+  video:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: guardian-pilot:latest
+    container_name: gp_video
+    command: video
+    environment:
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - MODEL_DIR=/app/models
+      - VIDEO_PATH=/data/input.mp4   # override bằng -e VIDEO_PATH=...
+      - TARGET_FPS=15
+      - AUDIT_LOG=/audit/guardian_pilot_audit.log
+    volumes:
+      # Models: mount thư mục chứa 4 task folders
+      - type: bind
+        source: .                    # thư mục hiện tại (chứa task_1, Task_3, Task_4...)
+        target: /app/models
+        read_only: true
+      # Video input: đặt file video vào ./data/input.mp4
+      - type: bind
+        source: ./data
+        target: /data
+        read_only: true
+      # Audit log output
+      - type: bind
+        source: ./logs
+        target: /audit
+    # Không cần GPU cho chế độ này (dùng CPU)
+    profiles: []
+
+  # ────────────────────────────────────────
+  # SERVICE 3: Real-time camera — Linux + NVIDIA GPU
+  # Yêu cầu: nvidia-docker2, Docker Desktop trên Windows
+  # ────────────────────────────────────────
+  camera:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: guardian-pilot:latest
+    container_name: gp_camera
+    command: camera
+    environment:
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - MODEL_DIR=/app/models
+      - CAMERA_INDEX=0
+      - TARGET_FPS=15
+      - DISPLAY=${DISPLAY:-:0}        # X11 forwarding (Linux)
+      - AUDIT_LOG=/audit/guardian_pilot_audit.log
+    volumes:
+      - type: bind
+        source: .
+        target: /app/models
+        read_only: true
+      - type: bind
+        source: ./logs
+        target: /audit
+      # X11 socket (Linux host — bỏ qua trên Windows)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    devices:
+      # Camera device — Linux. Windows dùng USB passthrough của Docker Desktop
+      - /dev/video0:/dev/video0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles:
+      - camera   # chỉ active khi: docker compose --profile camera run camera
+
+# ────────────────────────────────────────
+# NETWORKS & VOLUMES chung
+# ────────────────────────────────────────
+volumes:
+  # Named volume cho audit logs (optional — có thể dùng bind mount bên trên)
+  audit_logs:
