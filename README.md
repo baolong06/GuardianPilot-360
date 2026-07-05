@@ -9,13 +9,12 @@
 1. [Tổng quan hệ thống](#1-tổng-quan-hệ-thống)
 2. [Cấu trúc thư mục](#2-cấu-trúc-thư-mục)
 3. [Yêu cầu cần có](#3-yêu-cầu-cần-có)
-4. [Cách 1 — Chạy bằng Docker (khuyến nghị)](#4-cách-1--chạy-bằng-docker-khuyến-nghị)
-5. [Cách 2 — Chạy Python trực tiếp (local)](#5-cách-2--chạy-python-trực-tiếp-local)
-6. [Các lệnh run.py chi tiết](#6-các-lệnh-runpy-chi-tiết)
-7. [Đọc kết quả đầu ra](#7-đọc-kết-quả-đầu-ra)
-8. [Chạy unit tests](#8-chạy-unit-tests)
-9. [Xử lý lỗi thường gặp](#9-xử-lý-lỗi-thường-gặp)
-10. [Kiến trúc tóm tắt](#10-kiến-trúc-tóm-tắt)
+4. [Cài đặt và chạy](#4-cài-đặt-và-chạy)
+5. [Các lệnh run.py chi tiết](#5-các-lệnh-runpy-chi-tiết)
+6. [Đọc kết quả đầu ra](#6-đọc-kết-quả-đầu-ra)
+7. [Chạy unit tests](#7-chạy-unit-tests)
+8. [Xử lý lỗi thường gặp](#8-xử-lý-lỗi-thường-gặp)
+9. [Kiến trúc tóm tắt](#9-kiến-trúc-tóm-tắt)
 
 ---
 
@@ -42,31 +41,27 @@ EEG    → [M2]             ──┤→ Knowledge Graph → Orchestrator → Ac
 
 ```
 Model/
-├── Dockerfile                    # Docker image definition
-├── docker-compose.yml            # 3 service: test / video / camera
-├── docker-entrypoint.sh          # Entrypoint tự động setup models
-├── .dockerignore
 ├── requirements.txt
 ├── run.py                        # Entry point Python
 │
 ├── guardian_pilot/               # Source code chính
 │   ├── core/
 │   │   ├── schema.py             # Enums + dataclasses dùng chung
-│   │   └── knowledge_graph.py   # Blackboard in-memory (networkx)
+│   │   └── knowledge_graph.py    # Blackboard in-memory (networkx)
 │   ├── agents/
-│   │   ├── base_agent.py        # Abstract PerceptionAgent
-│   │   ├── m1_drowsiness.py     # Agent M1
-│   │   ├── m2_microsleep.py     # Agent M2
-│   │   ├── m3_distracted.py     # Agent M3 + fallback
-│   │   ├── m4_landmark.py       # Agent M4 LSTM/MLP
-│   │   └── orchestrator.py      # 7 luật ưu tiên
-│   ├── dispatcher.py            # ThreadPoolExecutor frame routing
-│   ├── actuation.py             # Console output + audit log
-│   └── system.py               # Facade khởi tạo toàn hệ thống
+│   │   ├── base_agent.py         # Abstract PerceptionAgent
+│   │   ├── m1_drowsiness.py      # Agent M1
+│   │   ├── m2_microsleep.py      # Agent M2
+│   │   ├── m3_distracted.py      # Agent M3 + fallback
+│   │   ├── m4_landmark.py        # Agent M4 LSTM/MLP
+│   │   └── orchestrator.py       # 7 luật ưu tiên
+│   ├── dispatcher.py             # ThreadPoolExecutor frame routing
+│   ├── actuation.py              # Console output + audit log
+│   └── system.py                 # Facade khởi tạo toàn hệ thống
 │
 ├── tests/
-│   ├── test_knowledge_graph.py  # 14 unit tests
-│   └── test_orchestrator_rules.py  # 9 unit tests (7 luật)
+│   ├── test_knowledge_graph.py   # 14 unit tests
+│   └── test_orchestrator_rules.py   # 9 unit tests (7 luật)
 │
 ├── task_1/                       # Model M1 (56MB)
 ├── Task 2 — .../                 # Model M2 (6.8MB)
@@ -81,119 +76,13 @@ Model/
 
 ## 3. Yêu cầu cần có
 
-### Cách Docker (không cần cài Python thủ công)
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/Mac) hoặc Docker Engine (Linux)
+- Python **3.10 hoặc 3.11** (khuyến nghị 3.11 — MediaPipe chưa hỗ trợ 3.12+)
 - RAM tối thiểu **8GB** (TensorFlow cần ~4GB khi load tất cả model)
-- Ổ cứng trống **~10GB** (Docker image ~6GB vì TensorFlow base)
-
-### Cách Python local
-- Python **3.10 hoặc 3.11** (khuyến nghị 3.11)
-- RAM tối thiểu **8GB**
-- GPU NVIDIA + CUDA 11.8+ (tùy chọn, tăng tốc đáng kể)
+- GPU NVIDIA + CUDA 11.8+ *(tùy chọn — tăng tốc đáng kể)*
 
 ---
 
-## 4. Cách 1 — Chạy bằng Docker (khuyến nghị)
-
-> Người khác clone repo về **không cần cài bất kỳ thư viện Python nào** — Docker lo hết.
-
-### Bước 1: Build image (chỉ cần làm 1 lần)
-
-```bash
-# Vào thư mục dự án
-cd "E:\Khởi nghiệp\Model"
-
-# Build image (~10-20 phút lần đầu do download TensorFlow base image ~5GB)
-docker build -t guardian-pilot:latest .
-```
-
-> **Lần sau**: Nếu code thay đổi nhưng `requirements.txt` không đổi,
-> build chỉ mất **30 giây** do Docker cache layer pip install.
-
----
-
-### Bước 2a: Chạy Unit Tests (không cần model, không cần GPU)
-
-```bash
-docker compose run --rm test
-```
-
-Kết quả mong đợi:
-```
-▶  Running unit tests...
-
-============================= test session starts =============================
-...
-23 passed in 1.82s
-```
-
----
-
-### Bước 2b: Chạy trên file Video (headless — không cần màn hình)
-
-**1. Đặt file video vào thư mục `data/`:**
-```bash
-# Windows PowerShell
-Copy-Item "C:\path\to\your\video.mp4" ".\data\input.mp4"
-
-# Hoặc Linux/Mac
-cp /path/to/your/video.mp4 ./data/input.mp4
-```
-
-**2. Chạy:**
-```bash
-docker compose run --rm video
-```
-
-**Hoặc chỉ định tên file khác:**
-```bash
-docker compose run --rm -e VIDEO_PATH=/data/test_clip.mp4 video
-```
-
-**Tuỳ chỉnh FPS:**
-```bash
-docker compose run --rm -e TARGET_FPS=10 video
-```
-
----
-
-### Bước 2c: Chạy Real-time Camera (Linux + NVIDIA GPU)
-
-```bash
-# Bật profile camera
-docker compose --profile camera run --rm camera
-```
-
-> **Windows**: Camera trong Docker Desktop cần cấu hình USB passthrough thêm.
-> Xem [hướng dẫn USB passthrough Docker Desktop](https://docs.docker.com/desktop/features/usbip/).
-
----
-
-### Bước 2d: Mở shell debug bên trong container
-
-```bash
-docker run --rm -it \
-  -v "${PWD}:/app/models" \
-  guardian-pilot:latest shell
-```
-
----
-
-### Xem audit log sau khi chạy
-
-```bash
-# Log được ghi vào thư mục ./logs/
-cat logs/guardian_pilot_audit.log
-```
-
-Mỗi dòng là 1 JSON event:
-```json
-{"ts": "2026-06-28T14:50:00Z", "alert": "MILD_WARNING", "reason": "M1: Drowsy conf=0.72", "confidence": 0.504, "agents": ["M1_Drowsiness", "M4_LandmarkGaze"], "actions": ["beep_soft_1x", "dashboard_amber"]}
-```
-
----
-
-## 5. Cách 2 — Chạy Python trực tiếp (local)
+## 4. Cài đặt và chạy
 
 ### Bước 1: Tạo virtual environment
 
@@ -202,7 +91,7 @@ Mỗi dòng là 1 JSON event:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# Linux/Mac
+# Linux / macOS
 python3 -m venv .venv
 source .venv/bin/activate
 ```
@@ -213,9 +102,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> ⚠️ TensorFlow ~500MB, MediaPipe ~50MB — lần đầu mất 5-10 phút tuỳ mạng.
+> ⚠️ TensorFlow ~500MB, MediaPipe ~50MB — lần đầu mất 5–10 phút tuỳ mạng.
 
-### Bước 3: Kiểm tra cài đặt (không cần model)
+### Bước 3: Kiểm tra cài đặt (không cần model AI, không cần GPU)
 
 ```bash
 python -m pytest tests/ -v
@@ -226,22 +115,22 @@ Kết quả đúng: `23 passed`
 ### Bước 4: Chạy hệ thống
 
 ```bash
-# Trên video file
+# Trên file video
 python run.py --video data/input.mp4
 
 # Webcam real-time
 python run.py --camera 0
 
-# Với GPU + hiển thị FPS tuỳ chỉnh
+# Tuỳ chỉnh FPS
 python run.py --video data/input.mp4 --fps 20
 
-# Không hiển thị cửa sổ (headless / server)
+# Headless (không hiển thị cửa sổ)
 python run.py --video data/input.mp4 --no-display
 ```
 
 ---
 
-## 6. Các lệnh run.py chi tiết
+## 5. Các lệnh run.py chi tiết
 
 ```
 python run.py [OPTIONS]
@@ -267,12 +156,12 @@ python run.py --video data/test.mp4 --fps 10 --no-display
 python run.py --camera 0 --eeg --fps 15
 
 # Headless server mode, log ra file riêng
-python run.py --video data/input.mp4 --no-display --audit-log /tmp/run_audit.log
+python run.py --video data/input.mp4 --no-display --audit-log logs/run_audit.log
 ```
 
 ---
 
-## 7. Đọc kết quả đầu ra
+## 6. Đọc kết quả đầu ra
 
 ### Console output
 
@@ -308,9 +197,17 @@ Khi alert level thay đổi, hệ thống in ra:
 > `EMERGENCY` chỉ trigger khi Agent M2 (EEG) phát hiện `PATHOLOGICAL_PROXY`
 > với confidence > 0.6. Nếu không có sensor EEG → M2 tự tắt, `EMERGENCY` không bao giờ xảy ra.
 
+### Audit log
+
+Log được ghi vào `logs/guardian_pilot_audit.log`, mỗi dòng là 1 JSON event:
+
+```json
+{"ts": "2026-07-05T10:00:00Z", "alert": "MILD_WARNING", "reason": "M1: Drowsy conf=0.72", "confidence": 0.504, "agents": ["M1_Drowsiness", "M4_LandmarkGaze"], "actions": ["beep_soft_1x", "dashboard_amber"]}
+```
+
 ---
 
-## 8. Chạy unit tests
+## 7. Chạy unit tests
 
 Tests **không cần model AI** — chạy nhanh, không cần GPU.
 
@@ -336,7 +233,7 @@ python -m pytest tests/ -v --tb=long
 
 ---
 
-## 9. Xử lý lỗi thường gặp
+## 8. Xử lý lỗi thường gặp
 
 ### ❌ `ModuleNotFoundError: No module named 'cv2'`
 ```bash
@@ -357,12 +254,6 @@ pip install mediapipe>=0.10.0
 ```
 > MediaPipe không hỗ trợ Python 3.12+ — dùng **Python 3.11**.
 
-### ❌ Docker build bị lỗi `No space left on device`
-Docker image TensorFlow rất lớn (~6GB). Dọn cache Docker:
-```bash
-docker system prune -a
-```
-
 ### ❌ Agent M2 luôn offline
 Đây là **hành vi đúng** khi không có sensor EEG/EOG.
 Hệ thống tiếp tục chạy với M1, M3, M4. Chỉ dùng `--eeg` khi có hardware thật.
@@ -380,7 +271,7 @@ Hoặc bật GPU (cần cài CUDA + TF-GPU).
 
 ---
 
-## 10. Kiến trúc tóm tắt
+## 9. Kiến trúc tóm tắt
 
 ```
 ┌──────────────────────────────────────────────────────────┐
