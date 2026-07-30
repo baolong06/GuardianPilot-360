@@ -1,0 +1,866 @@
+'use strict';
+
+// ── DOM refs ──────────────────────────────────────────────────────────────
+const btnInit          = document.getElementById('btnInit');
+const systemBadge      = document.getElementById('systemBadge');
+const statusBar        = document.getElementById('statusBar');
+
+const tabButtons       = document.querySelectorAll('.tab');
+const tabContents      = document.querySelectorAll('.tab-content');
+
+const webcamEl         = document.getElementById('webcam');
+const captureCanvas    = document.getElementById('captureCanvas');
+const annotatedCanvas  = document.getElementById('annotatedCanvas');
+const videoOverlay     = document.getElementById('videoOverlay');
+const overlayStatus    = document.getElementById('overlayStatus');
+const overlayProb      = document.getElementById('overlayProb');
+const btnStartCam      = document.getElementById('btnStartCam');
+const btnAnalyzeLive   = document.getElementById('btnAnalyzeLive');
+const btnStopLive      = document.getElementById('btnStopLive');
+
+const dropZone         = document.getElementById('dropZone');
+const fileInput        = document.getElementById('fileInput');
+const btnPickFile      = document.getElementById('btnPickFile');
+const previewImg       = document.getElementById('previewImg');
+const btnAnalyzeUpload = document.getElementById('btnAnalyzeUpload');
+
+const videoDropZone    = document.getElementById('videoDropZone');
+const videoInput       = document.getElementById('videoInput');
+const btnPickVideo     = document.getElementById('btnPickVideo');
+const videoFileName    = document.getElementById('videoFileName');
+const fileVideo        = document.getElementById('fileVideo');
+const videoAnnotatedPreview = document.getElementById('videoAnnotatedPreview');
+const btnAnalyzeVideo  = document.getElementById('btnAnalyzeVideo');
+const btnStopVideo     = document.getElementById('btnStopVideo');
+const videoFpsSlider   = document.getElementById('videoFpsSlider');
+const videoFpsValue    = document.getElementById('videoFpsValue');
+const videoProgressWrap= document.getElementById('videoProgressWrap');
+const videoProgressBar = document.getElementById('videoProgressBar');
+const videoProgressText= document.getElementById('videoProgressText');
+const videoTimeline    = document.getElementById('videoTimeline');
+
+const resultPanel      = document.getElementById('resultPanel');
+const alertCard        = document.getElementById('alertCard');
+const alertLabel       = document.getElementById('alertLabel');
+const alertProb        = document.getElementById('alertProb');
+const mlpProb          = document.getElementById('mlpProb');
+const lstmProb         = document.getElementById('lstmProb');
+const emaProb          = document.getElementById('emaProb');
+
+const featEarLeft      = document.getElementById('featEarLeft');
+const featEarRight     = document.getElementById('featEarRight');
+const featEarAvg       = document.getElementById('featEarAvg');
+const featMar          = document.getElementById('featMar');
+const featPitch        = document.getElementById('featPitch');
+const featYaw          = document.getElementById('featYaw');
+const featRoll         = document.getElementById('featRoll');
+const featNeck         = document.getElementById('featNeck');
+
+const neckBanner       = document.getElementById('neckAlarmBanner');
+const eyeBanner        = document.getElementById('eyeAlarmBanner');
+const timeline         = document.getElementById('timeline');
+
+// Bật debug logging cục bộ để chẩn đoán DROWSY-alarm-stuck
+const DEBUG_FUSION = true;   // đổi thành false khi đã ổn định
+const latencyInfo      = document.getElementById('latencyInfo');
+
+// ── NEW: Performance metrics DOM refs ─────────────────────────────────────
+const displayFpsEl     = document.getElementById('displayFps');
+const inferenceFpsEl   = document.getElementById('inferenceFps');
+const alertLatencyEl   = document.getElementById('alertLatency');
+
+// ── State ─────────────────────────────────────────────────────────────────
+let initialized  = false;
+let camStream    = null;
+let videoRunning = false;
+let videoAbort   = false;
+
+// ── Live mode state (new architecture) ────────────────────────────────────
+let liveActive      = false;
+let rafHandle       = null;      // requestAnimationFrame handle
+let inferenceWorker = null;      // Web Worker
+
+// Last inference result (shared between display loop & worker callback)
+let lastResult = null;
+
+// FPS counters
+let displayFrameCount  = 0;
+let inferenceFrameCount = 0;
+let fpsLastTime        = performance.now();
+
+// Alert latency tracking
+let eyeClosedAt        = null;   // timestamp (ms) khi EAR mulai rendah
+let alertLatencyMs     = null;
+
+// EAR threshold để phát hiện mắt nhắm
+const EAR_CLOSED_THRESHOLD = 0.20;
+
+// Canvas 2D context cache
+let annotatedCtx = null;
+
+// Overlay drawing state — dùng để vẽ EAR/status trực tiếp lên canvas
+const FONT_SCALE = 14; // px
+
+// ── Tabs ──────────────────────────────────────────────────────────────────
+tabButtons.forEach(btn => {
+  btn.addEventListener('click', () => {
+    tabButtons.forEach(b => b.classList.remove('active'));
+    tabContents.forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab' + capitalize(btn.dataset.tab))
+            .classList.add('active');
+  });
+});
+function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+// ── Init ──────────────────────────────────────────────────────────────────
+btnInit.addEventListener('click', async () => {
+  setBadge('loading', 'Đang khởi tạo…');
+  setStatus('Đang load model (có thể mất 30-60s)…');
+  btnInit.disabled = true;
+  try {
+    const res = await fetch('/api/init', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      initialized = true;
+      setBadge('ready', 'Sẵn sàng');
+      setStatus('Hệ thống sẵn sàng.');
+      btnAnalyzeLive.disabled   = camStream === null;
+      btnAnalyzeUpload.disabled = previewImg.classList.contains('hidden');
+    } else {
+      setBadge('error', 'Lỗi');
+      setStatus('Lỗi: ' + data.error);
+    }
+  } catch (e) {
+    setBadge('error', 'Lỗi');
+    setStatus('Không kết nối được server.');
+  } finally {
+    btnInit.disabled = false;
+  }
+});
+
+// ── FPS sliders ───────────────────────────────────────────────────────────
+videoFpsSlider.addEventListener('input', () => { videoFpsValue.textContent = videoFpsSlider.value; });
+
+// ── Webcam ────────────────────────────────────────────────────────────────
+btnStartCam.addEventListener('click', async () => {
+  try {
+    // Request high FPS from camera
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width:     { ideal: 640 },
+        height:    { ideal: 480 },
+        frameRate: { ideal: 30, max: 60 },
+      }
+    });
+    webcamEl.srcObject = camStream;
+
+    // Log actual camera capabilities
+    const track = camStream.getVideoTracks()[0];
+    const settings = track.getSettings();
+    console.log('[Camera] Actual settings:', settings);
+    setStatus(`Webcam: ${settings.width}×${settings.height} @ ${settings.frameRate}fps`);
+
+    if (initialized) btnAnalyzeLive.disabled = false;
+  } catch (e) {
+    setStatus('Không mở được webcam: ' + e.message);
+  }
+});
+
+// ── Live analysis — NEW ARCHITECTURE ─────────────────────────────────────
+btnAnalyzeLive.addEventListener('click', startLive);
+btnStopLive.addEventListener('click', stopLive);
+
+function startLive() {
+  if (liveActive) return;
+  if (!initialized || !camStream) return;
+
+  liveActive = true;
+  lastResult = null;
+  eyeClosedAt = null;
+  alertLatencyMs = null;
+  displayFrameCount = 0;
+  inferenceFrameCount = 0;
+  fpsLastTime = performance.now();
+
+  btnAnalyzeLive.classList.add('live-active');
+  btnAnalyzeLive.disabled = true;
+  btnStopLive.disabled    = false;
+
+  // Show canvas (live annotated), hide video element
+  annotatedCanvas.classList.remove('hidden');
+  videoOverlay.classList.add('hidden');
+  setStatus('Live phân tích đang chạy…');
+
+  // Cache canvas context
+  annotatedCtx = annotatedCanvas.getContext('2d');
+
+  // ── Start Web Worker ──
+  inferenceWorker = new Worker('/static/js/worker.js');
+  inferenceWorker.onmessage = onWorkerMessage;
+  inferenceWorker.onerror   = (e) => console.error('[Worker error]', e);
+  inferenceWorker.postMessage({ type: 'start' });
+
+  // ── Start Display Loop via requestAnimationFrame ──
+  startDisplayLoop();
+}
+
+function stopLive() {
+  if (!liveActive) return;
+  liveActive = false;
+
+  // Stop RAF
+  if (rafHandle) { cancelAnimationFrame(rafHandle); rafHandle = null; }
+
+  // Stop Worker
+  if (inferenceWorker) {
+    inferenceWorker.postMessage({ type: 'stop' });
+    inferenceWorker.terminate();
+    inferenceWorker = null;
+  }
+
+  btnAnalyzeLive.classList.remove('live-active');
+  btnAnalyzeLive.disabled = !initialized || camStream === null;
+  btnStopLive.disabled    = true;
+  annotatedCanvas.classList.add('hidden');
+  videoOverlay.classList.add('hidden');
+
+  if (annotatedCtx) {
+    annotatedCtx.clearRect(0, 0, annotatedCanvas.width, annotatedCanvas.height);
+  }
+
+  // Clear metrics
+  if (displayFpsEl)   displayFpsEl.textContent   = '—';
+  if (inferenceFpsEl) inferenceFpsEl.textContent = '—';
+  if (alertLatencyEl) alertLatencyEl.textContent  = '—';
+
+  setStatus('Đã dừng live analysis.');
+}
+
+// ── Display Loop — runs at full camera FPS via requestAnimationFrame ──────
+// This NEVER waits for inference. It just draws whatever is available.
+let lastFrameSentTs = 0;
+const SEND_INTERVAL_MS = 100; // send frame to worker every 100ms (10/s)
+
+function startDisplayLoop() {
+  function loop() {
+    if (!liveActive) return;
+    rafHandle = requestAnimationFrame(loop);
+
+    const now = performance.now();
+
+    // ── Draw current webcam frame to canvas ──
+    if (webcamEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      const vw = webcamEl.videoWidth  || 640;
+      const vh = webcamEl.videoHeight || 480;
+
+      if (annotatedCanvas.width !== vw || annotatedCanvas.height !== vh) {
+        annotatedCanvas.width  = vw;
+        annotatedCanvas.height = vh;
+      }
+
+      // Draw raw webcam frame (this is the "display" layer — always at camera FPS)
+      annotatedCtx.drawImage(webcamEl, 0, 0, vw, vh);
+
+      // Overlay inference result (from last worker callback — may be 100ms stale, that's OK)
+      if (lastResult) {
+        drawInferenceOverlay(annotatedCtx, vw, vh, lastResult);
+      }
+
+      // Update display FPS counter
+      displayFrameCount++;
+    }
+
+    // ── Send frame to worker (rate-limited to SEND_INTERVAL_MS) ──
+    if (now - lastFrameSentTs >= SEND_INTERVAL_MS) {
+      lastFrameSentTs = now;
+      sendFrameToWorker(now);
+    }
+
+    // ── Update FPS display every second ──
+    const elapsed = now - fpsLastTime;
+    if (elapsed >= 1000) {
+      const dispFps = Math.round(displayFrameCount   / (elapsed / 1000));
+      const infFps  = Math.round(inferenceFrameCount / (elapsed / 1000));
+      displayFrameCount   = 0;
+      inferenceFrameCount = 0;
+      fpsLastTime = now;
+
+      if (displayFpsEl)   displayFpsEl.textContent   = dispFps;
+      if (inferenceFpsEl) inferenceFpsEl.textContent = infFps;
+      if (alertLatencyEl && alertLatencyMs != null)
+        alertLatencyEl.textContent = alertLatencyMs + 'ms';
+    }
+  }
+
+  rafHandle = requestAnimationFrame(loop);
+}
+
+// ── Send a downscaled frame to inference worker ───────────────────────────
+const INFERENCE_W = 320;
+const INFERENCE_H = 240;
+
+// Reuse small canvas for encoding
+const _smallCanvas  = document.createElement('canvas');
+_smallCanvas.width  = INFERENCE_W;
+_smallCanvas.height = INFERENCE_H;
+const _smallCtx     = _smallCanvas.getContext('2d');
+
+function sendFrameToWorker(timestamp) {
+  if (!inferenceWorker || !liveActive) return;
+  if (webcamEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+
+  // Downscale to 320×240 for inference (faster encode + faster MediaPipe)
+  _smallCtx.drawImage(webcamEl, 0, 0, INFERENCE_W, INFERENCE_H);
+  const dataUrl = _smallCanvas.toDataURL('image/jpeg', 0.75);
+
+  inferenceWorker.postMessage({ type: 'frame', dataUrl, timestamp });
+}
+
+// ── Worker message handler ────────────────────────────────────────────────
+function onWorkerMessage(e) {
+  const msg = e.data;
+
+  if (msg.type === 'result') {
+    const data = msg.data;
+    if (!data.ok) return;
+
+    lastResult = data;
+    inferenceFrameCount++;
+
+    // Update UI panels
+    applyResult(data);
+    addTimelineSegment(data.alarm_on);
+    latencyInfo.textContent = msg.inferenceMs + ' ms';
+
+    // ── Alert latency tracking ──
+    // Track how long from eye closure to alarm trigger
+    const ear = data.features?.ear_avg;
+    if (ear != null) {
+      if (ear < EAR_CLOSED_THRESHOLD) {
+        // Eyes closed
+        if (eyeClosedAt === null) eyeClosedAt = msg.timestamp;
+      } else {
+        // Eyes open
+        eyeClosedAt = null;
+        alertLatencyMs = null;
+      }
+
+      if (data.alarm_on && eyeClosedAt !== null && alertLatencyMs === null) {
+        alertLatencyMs = Math.round(performance.now() - eyeClosedAt);
+      }
+    }
+
+  } else if (msg.type === 'log') {
+    console.log('[Worker]', msg.message);
+  } else if (msg.type === 'error') {
+    console.warn('[Worker error]', msg.message);
+  }
+}
+
+// ── Landmark index groups (mirrors app.py) ────────────────────────────────
+const IDX_EYE_L  = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
+const IDX_EYE_R  = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
+const IDX_MOUTH  = [61,185,40,39,37,0,267,269,270,409,291,375,321,405,314,17,84,181,91,146];
+
+// Face mesh tessellation — subset of connections for a visible mesh grid
+// We draw all 468 tiny dots + key contour lines
+function _lmXY(face_lm, idx, w, h) {
+  const i = idx * 2;
+  if (i + 1 >= face_lm.length) return null;
+  return [face_lm[i] * w, face_lm[i + 1] * h];
+}
+
+function _drawContour(ctx, face_lm, indices, w, h, color, lineWidth = 1) {
+  const pts = indices.map(i => _lmXY(face_lm, i, w, h)).filter(Boolean);
+  if (pts.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.stroke();
+}
+
+// ── Draw inference overlay DIRECTLY on display canvas ─────────────────────
+function drawInferenceOverlay(ctx, w, h, data) {
+  const alarmOn   = data.alarm_on;
+  const emaProb   = data.ema_prob   || 0;
+  const neckAlarm = data.neck_alarm || false;
+  const eyeAlarm  = data.eye_alarm  || false;
+  const feat      = data.features   || {};
+  const face_lm   = data.face_lm;   // flat [x0,y0,x1,y1,...] normalized
+  const pose_lm   = data.pose_lm;   // {nose,l_eye,r_eye,l_ear,r_ear,l_sh,r_sh,...}
+
+  // Tỉ lệ: cam real-time vẽ trên canvas đã scale về display size
+  // nhưng landmark là normalized (0-1) → nhân với w,h hiện tại
+
+  // ════════════════════════════════════════════════════
+  // 1. FACE MESH LANDMARKS (đẹp hơn, dots to + iris)
+  // ════════════════════════════════════════════════════
+  if (face_lm && face_lm.length >= 2) {
+    const dotColor     = eyeAlarm ? 'rgba(255,150,60,0.85)'
+                          : alarmOn ? 'rgba(220,80,80,0.75)'
+                          :           'rgba(0,220,100,0.65)';
+    const contourColor = eyeAlarm ? 'rgba(255,160,70,0.95)'
+                          : alarmOn ? 'rgba(220,80,80,0.95)'
+                          :           'rgba(0,230,110,0.95)';
+    const irisColor    = 'rgba(180,140,255,0.95)';   // iris tím nổi bật
+
+    // All face dots (to hơn, 1.6px → rõ landmark)
+    ctx.fillStyle = dotColor;
+    const n = face_lm.length / 2;
+    for (let i = 0; i < n; i++) {
+      const x = face_lm[i * 2]     * w;
+      const y = face_lm[i * 2 + 1] * h;
+      ctx.beginPath();
+      ctx.arc(x, y, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Iris landmarks (468-477, 10 điểm quanh mống mắt)
+    ctx.fillStyle = irisColor;
+    for (let i = 468; i <= 477 && i < n; i++) {
+      const x = face_lm[i * 2]     * w;
+      const y = face_lm[i * 2 + 1] * h;
+      ctx.beginPath();
+      ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Eye contours
+    _drawContour(ctx, face_lm, IDX_EYE_L, w, h, contourColor, 1.8);
+    _drawContour(ctx, face_lm, IDX_EYE_R, w, h, contourColor, 1.8);
+
+    // Mouth contour
+    _drawContour(ctx, face_lm, IDX_MOUTH, w, h, contourColor, 1.4);
+  }
+
+  // ════════════════════════════════════════════════════
+  // 2. POSE SKELETON (đầy đủ: nose, eyes, ears, shoulders, elbows)
+  // ════════════════════════════════════════════════════
+  if (pose_lm) {
+    const skeletonColor = neckAlarm ? '#ff9800' : '#5599ff';
+    const accentColor   = neckAlarm ? '#ffb74d' : '#80aaff';
+
+    // Helper để lấy (x,y) tuyệt đối
+    const XY = (p) => p ? [p[0] * w, p[1] * h] : null;
+
+    const nose  = XY(pose_lm.nose);
+    const lEye  = XY(pose_lm.l_eye);
+    const rEye  = XY(pose_lm.r_eye);
+    const lEar  = XY(pose_lm.l_ear);
+    const rEar  = XY(pose_lm.r_ear);
+    const lSh   = XY(pose_lm.l_sh);
+    const rSh   = XY(pose_lm.r_sh);
+    const lEl   = XY(pose_lm.l_el);
+    const rEl   = XY(pose_lm.r_el);
+
+    ctx.lineWidth = 2.5;
+
+    // ── Shoulder line ──
+    if (lSh && rSh) {
+      ctx.beginPath();
+      ctx.moveTo(lSh[0], lSh[1]);
+      ctx.lineTo(rSh[0], rSh[1]);
+      ctx.strokeStyle = skeletonColor;
+      ctx.stroke();
+
+      const mx = (lSh[0] + rSh[0]) / 2;
+      const my = (lSh[1] + rSh[1]) / 2;
+
+      // ── Neck line (mid shoulder → nose) ──
+      if (nose) {
+        ctx.beginPath();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(nose[0], nose[1]);
+        ctx.strokeStyle = neckAlarm ? '#ff9800' : '#80aaff';
+        ctx.stroke();
+
+        // ── Vertical reference line (để so góc) ──
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(mx, nose[1]);
+        ctx.strokeStyle = 'rgba(150,150,150,0.6)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // ── Neck-tilt arc (cung tròn góc) ở mũi ──
+        const dx = nose[0] - mx;
+        const dy = my - nose[1];  // +nếu nose ở trên vai
+        const neckAngle = Math.atan2(dx, dy);  // góc từ phương thẳng đứng
+        const arcR = 30;
+        // Vẽ cung tròn từ phương thẳng đứng → vector thực
+        ctx.beginPath();
+        ctx.arc(mx, nose[1], arcR, -Math.PI/2, -Math.PI/2 + neckAngle, dx > 0);
+        ctx.strokeStyle = neckAlarm ? '#ff9800' : 'rgba(120,180,255,0.85)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // ── Hiển thị neck_tilt độ ──
+        const ntDeg = feat.neck_tilt;
+        if (ntDeg != null && !isNaN(ntDeg)) {
+          ctx.fillStyle = neckAlarm ? '#ff9800' : '#90caf9';
+          ctx.font = 'bold 12px monospace';
+          const label = `∠${ntDeg.toFixed(1)}°`;
+          const tx = mx + 12, ty = nose[1] - 8;
+          // background
+          ctx.fillStyle = 'rgba(0,0,0,0.55)';
+          ctx.fillRect(tx - 2, ty - 12, 50, 16);
+          ctx.fillStyle = neckAlarm ? '#ff9800' : '#90caf9';
+          ctx.fillText(label, tx, ty);
+        }
+      }
+    }
+
+    // ── Eyes line (l_eye ↔ r_eye) ──
+    if (lEye && rEye) {
+      ctx.beginPath();
+      ctx.moveTo(lEye[0], lEye[1]);
+      ctx.lineTo(rEye[0], rEye[1]);
+      ctx.strokeStyle = accentColor;
+      ctx.stroke();
+    }
+
+    // ── Eyes → Ears (tai → mắt mỗi bên) ──
+    if (lEye && lEar) {
+      ctx.beginPath();
+      ctx.moveTo(lEye[0], lEye[1]);
+      ctx.lineTo(lEar[0], lEar[1]);
+      ctx.strokeStyle = accentColor;
+      ctx.stroke();
+    }
+    if (rEye && rEar) {
+      ctx.beginPath();
+      ctx.moveTo(rEye[0], rEye[1]);
+      ctx.lineTo(rEar[0], rEar[1]);
+      ctx.strokeStyle = accentColor;
+      ctx.stroke();
+    }
+
+    // ── Shoulders → Elbows ──
+    if (lSh && lEl) {
+      ctx.beginPath();
+      ctx.moveTo(lSh[0], lSh[1]);
+      ctx.lineTo(lEl[0], lEl[1]);
+      ctx.strokeStyle = accentColor;
+      ctx.stroke();
+    }
+    if (rSh && rEl) {
+      ctx.beginPath();
+      ctx.moveTo(rSh[0], rSh[1]);
+      ctx.lineTo(rEl[0], rEl[1]);
+      ctx.strokeStyle = accentColor;
+      ctx.stroke();
+    }
+
+    // ── Dots cho tất cả pose landmarks ──
+    ctx.fillStyle = skeletonColor;
+    [nose, lEye, rEye, lEar, rEar, lSh, rSh, lEl, rEl].forEach(p => {
+      if (!p) return;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  // ════════════════════════════════════════════════════
+  // 3. HUD TEXT OVERLAY (dark bar at top)
+  // ════════════════════════════════════════════════════
+  const nLines = (neckAlarm ? 1 : 0) + (eyeAlarm ? 1 : 0);
+  const barH = 70 + 25 * nLines;
+  ctx.fillStyle = 'rgba(10, 10, 10, 0.60)';
+  ctx.fillRect(0, 0, w, barH);
+
+  // Status label
+  const statusColor = alarmOn ? '#ff5555' : '#44dd88';
+  const label = alarmOn ? '⚠ DROWSY' : '✓ NORMAL';
+  ctx.fillStyle = statusColor;
+  ctx.font = 'bold 15px monospace';
+  ctx.fillText(`${label}  (p=${emaProb.toFixed(2)})`, 10, 28);
+
+  // MLP / LSTM detail
+  const mlp  = data.p_mlp_drowsy;
+  const lstm = data.p_lstm_drowsy;
+  let detail = '';
+  if (mlp  != null) detail += `MLP=${mlp.toFixed(2)}`;
+  if (lstm != null) detail += `  LSTM=${lstm.toFixed(2)}`;
+  if (detail) {
+    ctx.fillStyle = 'rgba(160,160,160,0.9)';
+    ctx.font = '11px monospace';
+    ctx.fillText(detail, 10, 50);
+  }
+
+  // Rule-based alarms
+  let yOff = 78;
+  if (neckAlarm) {
+    ctx.fillStyle = '#ff9800';
+    ctx.font = 'bold 13px monospace';
+    ctx.fillText('⚠ NECK-TILT ALARM', 10, yOff);
+    yOff += 25;
+  }
+  if (eyeAlarm) {
+    ctx.fillStyle = '#ff8a3c';
+    ctx.font = 'bold 13px monospace';
+    ctx.fillText('⚠ EYE-CLOSED ALARM', 10, yOff);
+    yOff += 25;
+  }
+
+  // ── Internal debug (eye-closure escape-valve) ────────────────────────────
+  if (data.ear_smooth != null) {
+    ctx.fillStyle = 'rgba(140,140,140,0.85)';
+    ctx.font = '10px monospace';
+    const earTxt   = `EAR=${data.ear_smooth.toFixed(3)}`;
+    const openTxt  = `open=${(data.eyes_open_streak_ms/1000).toFixed(1)}s`;
+    const closeTxt = `close=${(data.eye_closed_streak_ms/1000).toFixed(1)}s`;
+    ctx.fillText(earTxt, 10, yOff);
+    ctx.fillText(openTxt, 100, yOff);
+    ctx.fillText(closeTxt, 180, yOff);
+  }
+
+  // EAR / MAR — top right
+  const ear = feat.ear_avg;
+  const mar = feat.mar;
+  ctx.font = '11px monospace';
+  ctx.fillStyle = 'rgba(200,200,200,0.85)';
+  if (ear != null) ctx.fillText(`EAR ${ear.toFixed(3)}`, w - 115, 22);
+  if (mar != null) ctx.fillText(`MAR ${mar.toFixed(3)}`, w - 115, 38);
+
+  // Red border flash when drowsy
+  if (alarmOn) {
+    ctx.strokeStyle = 'rgba(220, 50, 50, 0.80)';
+    ctx.lineWidth = 5;
+    ctx.strokeRect(2, 2, w - 4, h - 4);
+  }
+}
+
+// ── Upload image ──────────────────────────────────────────────────────────
+btnPickFile.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => loadImageFile(fileInput.files[0]));
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  loadImageFile(e.dataTransfer.files[0]);
+});
+
+function loadImageFile(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  previewImg.src = url;
+  previewImg.classList.remove('hidden');
+  btnAnalyzeUpload.disabled = !initialized;
+}
+
+btnAnalyzeUpload.addEventListener('click', async () => {
+  if (previewImg.classList.contains('hidden')) return;
+  const canvas = document.createElement('canvas');
+  canvas.width  = previewImg.naturalWidth;
+  canvas.height = previewImg.naturalHeight;
+  canvas.getContext('2d').drawImage(previewImg, 0, 0);
+  await analyzeFrameOnce(canvas.toDataURL('image/jpeg', 0.9), true);
+});
+
+// ── Upload video ──────────────────────────────────────────────────────────
+btnPickVideo.addEventListener('click', () => videoInput.click());
+videoInput.addEventListener('change', () => {
+  const file = videoInput.files[0];
+  if (!file) return;
+  fileVideo.src = URL.createObjectURL(file);
+  fileVideo.classList.remove('hidden');
+  videoFileName.textContent = file.name;
+  videoFileName.classList.remove('hidden');
+  btnAnalyzeVideo.disabled = !initialized;
+});
+
+btnAnalyzeVideo.addEventListener('click', () => {
+  if (videoRunning) return;
+  videoRunning = true;
+  videoAbort   = false;
+  btnAnalyzeVideo.disabled = true;
+  btnStopVideo.disabled    = false;
+  videoProgressWrap.classList.remove('hidden');
+  videoTimeline.innerHTML  = '';
+  fileVideo.classList.add('hidden');
+  videoAnnotatedPreview.classList.remove('hidden');
+  runVideoAnalysis();
+});
+
+btnStopVideo.addEventListener('click', () => {
+  videoAbort = true;
+  videoRunning = false;
+  btnAnalyzeVideo.disabled = !initialized;
+  btnStopVideo.disabled    = true;
+  videoAnnotatedPreview.classList.add('hidden');
+  fileVideo.classList.remove('hidden');
+  setStatus('Đã dừng phân tích video.');
+});
+
+async function runVideoAnalysis() {
+  const fps = parseInt(videoFpsSlider.value, 10);
+  const interval = 1.0 / fps;
+  const duration = fileVideo.duration || 0;
+  let t = 0;
+
+  await fetch('/api/reset', { method: 'POST' });
+
+  const snapCanvas = document.createElement('canvas');
+  snapCanvas.width  = 640;
+  snapCanvas.height = 480;
+  const ctx = snapCanvas.getContext('2d');
+
+  while (!videoAbort && t <= duration) {
+    fileVideo.currentTime = t;
+    await new Promise(r => { fileVideo.onseeked = r; });
+    ctx.drawImage(fileVideo, 0, 0, snapCanvas.width, snapCanvas.height);
+    const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.82);
+
+    const t0 = performance.now();
+    const result = await callAnalyze(dataUrl, false, true);
+    const lat = Math.round(performance.now() - t0);
+
+    if (result) {
+      applyResult(result);
+      addTimelineSegment(result.alarm_on);
+      latencyInfo.textContent = lat + ' ms';
+      if (result.annotated_frame) {
+        const img = new Image();
+        img.onload = () => {
+          videoAnnotatedPreview.width  = img.naturalWidth;
+          videoAnnotatedPreview.height = img.naturalHeight;
+          videoAnnotatedPreview.getContext('2d').drawImage(img, 0, 0);
+        };
+        img.src = result.annotated_frame;
+      }
+    }
+
+    const pct = duration > 0 ? Math.min(100, (t / duration) * 100) : 0;
+    videoProgressBar.style.width = pct + '%';
+    videoProgressText.textContent = Math.round(pct) + '%';
+
+    t += interval;
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  videoRunning = false;
+  videoAbort   = false;
+  btnAnalyzeVideo.disabled = !initialized;
+  btnStopVideo.disabled    = true;
+  videoProgressBar.style.width = '100%';
+  videoProgressText.textContent = '100%';
+  setStatus('Phân tích video hoàn tất.');
+}
+
+// ── One-shot image analyze (upload tab) ──────────────────────────────────
+async function analyzeFrameOnce(dataUrl, resetState = false) {
+  if (!initialized) { setStatus('Chưa khởi tạo hệ thống.'); return; }
+  const t0 = performance.now();
+  const result = await callAnalyze(dataUrl, resetState, true);
+  if (result) {
+    applyResult(result);
+    addTimelineSegment(result.alarm_on);
+    latencyInfo.textContent = Math.round(performance.now() - t0) + ' ms';
+    if (result.annotated_frame) drawAnnotatedStatic(result.annotated_frame);
+  }
+}
+
+async function callAnalyze(dataUrl, resetState = false, annotate = false) {
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataUrl, reset_state: resetState, annotate }),
+    });
+    const data = await res.json();
+    if (!data.ok) { setStatus('Lỗi: ' + data.error); return null; }
+    return data;
+  } catch (e) {
+    setStatus('Lỗi kết nối server.');
+    return null;
+  }
+}
+
+function applyResult(data) {
+  const on = data.alarm_on;
+
+  alertCard.dataset.alarm   = on ? 'on' : 'off';
+  resultPanel.dataset.alarm = on ? 'on' : 'off';
+  alertLabel.textContent    = on ? 'DROWSY' : 'NORMAL';
+  alertProb.textContent     = 'p = ' + fmt(data.ema_prob);
+  mlpProb.textContent       = data.p_mlp_drowsy  != null ? fmt(data.p_mlp_drowsy)  : '—';
+  lstmProb.textContent      = data.p_lstm_drowsy != null ? fmt(data.p_lstm_drowsy) : '—';
+  emaProb.textContent       = fmt(data.ema_prob);
+
+  overlayStatus.textContent = on ? 'DROWSY' : 'NORMAL';
+  overlayProb.textContent   = 'p=' + fmt(data.ema_prob);
+  overlayStatus.style.color = on ? '#e09090' : '#7ec494';
+
+  if (data.neck_alarm) neckBanner.classList.remove('hidden');
+  else                 neckBanner.classList.add('hidden');
+
+  if (data.eye_alarm)  eyeBanner.classList.remove('hidden');
+  else                 eyeBanner.classList.add('hidden');
+
+// Debug: log every 10 frames to avoid spamming
+if (DEBUG_FUSION) {
+  window._dbgFrame = ((window._dbgFrame || 0) + 1);
+  if (window._dbgFrame % 10 === 0) {
+    console.log('[fusion]', {
+      alarm_on:   data.alarm_on,
+      ema_prob:   data.ema_prob,
+      p_mlp:      data.p_mlp_drowsy,
+      p_lstm:     data.p_lstm_drowsy,
+      neck_alarm: data.neck_alarm,
+      eye_alarm:  data.eye_alarm,
+      ear:        data.features?.ear_avg,
+    });
+  }
+}
+
+  if (data.features) {
+    const f = data.features;
+    featEarLeft.textContent  = fmtF(f.ear_left);
+    featEarRight.textContent = fmtF(f.ear_right);
+    featEarAvg.textContent   = fmtF(f.ear_avg);
+    featMar.textContent      = fmtF(f.mar);
+    featPitch.textContent    = fmtDeg(f.pitch);
+    featYaw.textContent      = fmtDeg(f.yaw);
+    featRoll.textContent     = fmtDeg(f.roll);
+    featNeck.textContent     = fmtDeg(f.neck_tilt);
+  }
+
+  if (!data.face_found) setStatus('Không phát hiện mặt — giữ kết quả trước đó.');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function drawAnnotatedStatic(dataUrl) {
+  const img = new Image();
+  img.onload = () => {
+    annotatedCanvas.width  = img.naturalWidth;
+    annotatedCanvas.height = img.naturalHeight;
+    annotatedCanvas.getContext('2d').drawImage(img, 0, 0);
+  };
+  img.src = dataUrl;
+}
+
+function fmt(v)    { return v != null ? v.toFixed(3) : '—'; }
+function fmtF(v)   { return v != null && !isNaN(v) ? v.toFixed(3) : '—'; }
+function fmtDeg(v) { return v != null && !isNaN(v) ? v.toFixed(1) + '°' : '—'; }
+
+function addTimelineSegment(alarmOn) {
+  const seg = document.createElement('div');
+  seg.className = 'tl-seg';
+  seg.dataset.alarm = alarmOn ? 'on' : 'off';
+  timeline.appendChild(seg);
+  timeline.scrollLeft = timeline.scrollWidth;
+  while (timeline.children.length > 300) timeline.removeChild(timeline.firstChild);
+}
+
+function setBadge(type, text) {
+  systemBadge.className = 'badge badge-' + type;
+  systemBadge.textContent = text;
+}
+function setStatus(msg) { statusBar.textContent = msg; }
