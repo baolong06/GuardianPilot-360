@@ -1,0 +1,16 @@
+# Cấu hình toàn cục
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  splits_dir: "data/splits"
+
+models:
+  trajectory:
+    config: "models/trajectory/config.yaml"
+    weights_dir: "models/trajectory/weights"
+
+training:
+  output_dir: "training/logs"
+
+evaluation:
+  reports_dir: "evaluation/reports"

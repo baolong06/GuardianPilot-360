@@ -1,0 +1,28 @@
+# model:
+#   type: "SocialLSTM"
+#   input_dim: 4
+#   hidden_dim: 128
+#   num_layers: 3
+#   pred_len: 5
+#   obs_len: 5
+#   neighbor_dim: 4
+model:
+  type: "TrajectoryLSTM"   # KHÔNG dùng SocialLSTM
+  input_dim: 4
+  hidden_dim: 128
+  num_layers: 3
+  pred_len: 5
+  obs_len: 5
+
+  
+training:
+  batch_size: 128
+  learning_rate: 0.001
+  num_epochs: 50
+  device: "cuda"
+  save_dir: "models/trajectory/weights/"
+
+data:
+  data_dir: "data/processed/bdd100k_trajectory/"
+  split_dir: "data/splits/"
+  min_track_len: 10

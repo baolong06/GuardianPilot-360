@@ -1,0 +1,231 @@
+# training/configs/config.yaml
+paths:
+  data_root: "data/processed"
+  model_root: "models"
+  log_root: "runs"
+
+pedestrian_behavior:
+  data:
+    train_json: "data/processed/pedestrian_behavior/train.json"
+    val_json: "data/processed/pedestrian_behavior/val.json"
+    test_json: null
+  model:
+    type: "GRU"
+    input_dim: 4
+    hidden_dim: 128
+    num_layers: 3
+    num_classes: 2
+    dropout: 0.2
+  training:
+    batch_size: 128
+    epochs: 50
+    lr: 0.0005
+    weight_decay: 1e-5
+    patience: 10
+    gradient_clip: 1.0
+    scheduler:
+      type: "ReduceLROnPlateau"
+      mode: "max"
+      factor: 0.5
+      patience: 5
+  augmentation:
+    noise_std: 0.005
+    scaling_range: [0.95, 1.05]
+    rotation_range: 2
+
+behavior_clf:
+  data:
+    train_json: "data/processed/unified_train.json"
+    val_json: "data/processed/unified_val.json"
+    test_json: null
+  model:
+    type: "GRU"
+    input_dim: 4
+    hidden_dim: 128
+    num_layers: 2
+    num_classes: 4
+    dropout: 0.2
+  training:
+    batch_size: 128
+    epochs: 50
+    lr: 0.001
+    weight_decay: 1e-5
+    patience: 10
+    gradient_clip: 1.0
+    scheduler:
+      type: "ReduceLROnPlateau"
+      mode: "max"
+      factor: 0.5
+      patience: 5
+  augmentation:
+    noise_std: 0.003
+    scaling_range: [0.97, 1.03]
+    rotation_range: 2
+
+pie_vehicle_behavior:
+  data:
+    train_json: "data/processed/pie_behavior/vehicle_behavior_train.json"
+    val_json: "data/processed/pie_behavior/vehicle_behavior_val.json"
+    test_json: null
+  model:
+    type: "GRU"
+    input_dim: 4
+    hidden_dim: 128
+    num_layers: 3
+    num_classes: 4
+    dropout: 0.2
+  training:
+    batch_size: 128
+    epochs: 50
+    lr: 0.0005
+    weight_decay: 1e-5
+    patience: 10
+    gradient_clip: 1.0
+    scheduler:
+      type: "ReduceLROnPlateau"
+      mode: "max"
+      factor: 0.5
+      patience: 5
+  augmentation:
+    noise_std: 0.003
+    scaling_range: [0.97, 1.03]
+    rotation_range: 2
+
+pie_trajectory:
+  vehicle:
+    data:
+      train_json: "data/processed/pie_trajectory/vehicle_train.json"
+      val_json: "data/processed/pie_trajectory/vehicle_val.json"
+      test_json: null
+    model:
+      type: "LSTM"
+      input_dim: 4
+      hidden_dim: 128
+      num_layers: 3
+      pred_len: 12
+      obs_len: 10
+    training:
+      batch_size: 128
+      epochs: 80
+      lr: 0.0005
+      weight_decay: 1e-5
+      patience: 15
+      gradient_clip: 1.0
+      scheduler:
+        type: "ReduceLROnPlateau"
+        mode: "min"
+        factor: 0.5
+        patience: 8
+  pedestrian:
+    data:
+      train_json: "data/processed/pie_trajectory/pedestrian_train.json"
+      val_json: "data/processed/pie_trajectory/pedestrian_val.json"
+      test_json: null
+    model:
+      type: "LSTM"
+      input_dim: 4
+      hidden_dim: 128
+      num_layers: 3
+      pred_len: 12
+      obs_len: 10
+    training:
+      batch_size: 128
+      epochs: 80
+      lr: 0.0005
+      weight_decay: 1e-5
+      patience: 15
+      gradient_clip: 1.0
+      scheduler:
+        type: "ReduceLROnPlateau"
+        mode: "min"
+        factor: 0.5
+        patience: 8
+
+traffic_light:
+  data:
+    img_dir: "data/processed/pie/traffic_light_images"
+    test_split: 0.2
+    img_size: 128
+  model:
+    type: "ResNet18"
+    num_classes: 3
+    pretrained: true
+  training:
+    batch_size: 64
+    epochs: 50
+    lr: 0.0001
+    weight_decay: 1e-4
+    patience: 8
+    gradient_clip: 1.0
+    scheduler:
+      type: "ReduceLROnPlateau"
+      mode: "max"
+      factor: 0.5
+      patience: 5
+  augmentation:
+    use: true
+    random_resized_crop: true
+    horizontal_flip: true
+    rotation_degrees: 10
+    color_jitter: 0.2
+
+# ─────────────────────────────────────────────────
+# Pedestrian crossing INTENTION (PIE)
+# input_dim=6: cx,cy,speed,heading,looking,crossing
+# label: 0=not_cross, 1=will_cross
+# ─────────────────────────────────────────────────
+intent:
+  data:
+    train_json: "data/processed/pie_intention/train.json"
+    val_json: "data/processed/pie_intention/val.json"
+    test_json: null
+    intention_threshold: 0.5   # intention_prob >= này → label=1
+  model:
+    type: "GRU"
+    input_dim: 6
+    hidden_dim: 128
+    num_layers: 2
+    num_classes: 2
+    dropout: 0.3
+  training:
+    batch_size: 64
+    epochs: 60
+    lr: 0.001
+    weight_decay: 1e-5
+    patience: 10
+    gradient_clip: 1.0
+    scheduler:
+      type: "ReduceLROnPlateau"
+      mode: "max"        # maximize weighted F1
+      factor: 0.5
+      patience: 5
+  augmentation:
+    noise_std: 0.005
+
+# ─────────────────────────────────────────────────
+# BDD100K General Trajectory (vehicle + person)
+# ─────────────────────────────────────────────────
+trajectory:
+  data:
+    train_json: "data/processed/unified_train.json"
+    val_json: "data/processed/unified_val.json"
+    test_json: null
+  model:
+    type: "LSTM"
+    input_dim: 4
+    hidden_dim: 128
+    num_layers: 2
+    pred_len: 5
+    obs_len: 5
+  training:
+    batch_size: 128
+    epochs: 50
+    lr: 0.001
+    weight_decay: 1e-5
+    patience: 10
+    gradient_clip: 1.0
+    scheduler:
+      type: "ReduceLROnPlateau"
+      mode: "min"
+      factor: 0.5
+      patience: 5

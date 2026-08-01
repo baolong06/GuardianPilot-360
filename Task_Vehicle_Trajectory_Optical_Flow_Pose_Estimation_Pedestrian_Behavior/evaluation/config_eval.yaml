@@ -1,0 +1,15 @@
+# Cấu hình đánh giá
+datasets:
+  bdd100k:
+    trajectory_dir: "data/processed/bdd100k_trajectory/"
+    split_dir: "data/splits/"
+
+metrics:
+  - ADE
+  - FDE
+  - MissRate
+
+threshold_miss_rate: 1.0  # mét
+
+model:
+  checkpoint: "models/trajectory/weights/best.pth"
