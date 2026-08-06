@@ -1,36 +1,27 @@
-# Python cache
 __pycache__/
-**/__pycache__/
-*.py[cod]
+*.pyc
 *.pyo
-.pytest_cache/
-.mypy_cache/
-
-# Virtual environments
+.env
 .venv/
-venv/
-env/
-# Logs & output
-logs/*.log
+
+# Large model files (track only via README)
+models/*.keras
+models/*.pkl
+models/*.task
+results/*.keras
+results/*.pkl
+results/*.task
+
+# Large video/media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Notebooks and temporary outputs
+results/*.ipynb
+nb_out.txt
+
+# Build / cache
 *.log
-*.jsonl
-
-# Data files (video)
-data/*.mp4
-data/*.avi
-data/*.mov
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# IDE
-.vscode/
-.idea/
-
-# Docker wheels cache
-/wheels/
-
-# pytest
-.pytest_cache/
+results/__huggingface_repos__.json

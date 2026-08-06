@@ -109,10 +109,11 @@ def _annotate_frame(frame: np.ndarray, result, feat: dict | None,
     out = frame.copy()
     h, w = out.shape[:2]
 
-    alarm_on = fused["alarm_on"] if fused else False
-    ema_prob = fused["ema_prob"] if fused else 0.0
-    neck_alarm = fused["neck_alarm"] if fused else False
-    eye_alarm  = fused.get("eye_alarm", False) if fused else False
+    alarm_on   = fused["alarm_on"]    if fused else False
+    ema_prob   = fused["ema_prob"]   if fused else 0.0
+    neck_alarm = fused["neck_alarm"]  if fused else False
+    eye_alarm  = fused.get("eye_alarm", False)   if fused else False
+    yawn_alarm = fused.get("yawn_alarm", False)  if fused else False
     status_clr = _CLR_DROWSY if alarm_on else _CLR_NORMAL
 
     # ── Face landmarks ─────────────────────────────────────────────────────
@@ -151,7 +152,7 @@ def _annotate_frame(frame: np.ndarray, result, feat: dict | None,
     label = "DROWSY" if alarm_on else "NORMAL"
 
     # Tính chiều cao thanh HUD: mỗi alarm thêm 1 dòng
-    n_alarm_lines = (1 if neck_alarm else 0) + (1 if eye_alarm else 0)
+    n_alarm_lines = (1 if neck_alarm else 0) + (1 if eye_alarm else 0) + (1 if yawn_alarm else 0)
     bar_h = 70 + 25 * n_alarm_lines
 
     # Nền mờ cho text
@@ -181,6 +182,10 @@ def _annotate_frame(frame: np.ndarray, result, feat: dict | None,
     if eye_alarm:
         cv2.putText(out, "EYE-CLOSED ALARM", (10, y_off), font, 0.65,
                     _CLR_EYE, 2, cv2.LINE_AA)
+        y_off += 25
+    if yawn_alarm:
+        cv2.putText(out, "YAWN DETECTED", (10, y_off), font, 0.65,
+                    (0, 200, 255), 2, cv2.LINE_AA)
         y_off += 25
 
     # EAR/MAR mini readout góc phải
@@ -275,12 +280,14 @@ def api_analyze():
                 "ema_prob":   round(_fusion.ema_prob or 0.0, 4),
                 "neck_alarm": False,
                 "eye_alarm":  False,
+                "yawn_alarm": False,
             }
             if annotate:
                 fused_stub = {"alarm_on": _fusion.alarm_on,
                               "ema_prob": round(_fusion.ema_prob or 0.0, 4),
                               "neck_alarm": False,
                               "eye_alarm": False,
+                              "yawn_alarm": False,
                               "p_mlp_drowsy": None, "p_lstm_drowsy": None,
                               "ear_smooth": getattr(_fusion, "ear_smooth", None),
                               "eyes_open_streak_ms": round(_fusion.eyes_open_streak_ms, 1),
@@ -386,6 +393,7 @@ def api_analyze_lite():
                 "ema_prob":   round(_fusion.ema_prob or 0.0, 4),
                 "neck_alarm": False,
                 "eye_alarm":  False,
+                "yawn_alarm": False,
                 "features":   None,
             })
 
