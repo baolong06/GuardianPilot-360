@@ -12,6 +12,8 @@ from collections import deque
 
 import numpy as np
 
+from .perclos import PERCLOSTracker
+
 # ── Hyperparameters (từ notebook) ────────────────────────────────────────────
 WINDOW_SIZE         = 30     # số frame trong cửa sổ LSTM
 EMA_ALPHA           = 0.5    # nhanh — bắt cú gật thoáng qua 200-300ms
@@ -73,6 +75,12 @@ class FusionState:
         self.yawn_state: str = "IDLE"          # IDLE | OPENING | CONFIRMED | COOLDOWN
         self.yawn_open_started_ms: float | None = None
         self.yawn_last_trigger_ms:  float = -1e9  # đã trigger lần cuối ở timestamp nào
+        
+        # PERCLOS tracker (L1 - new)
+        self.perclos_tracker: PERCLOSTracker = PERCLOSTracker(
+            window_sec=30.0,
+            eye_closed_threshold=EYE_CLOSED_THRESH
+        )
 
     def reset(self):
         self.__init__()
@@ -111,6 +119,11 @@ class FusionState:
             feat["ear_right"] = ear_smooth
             feat["ear_avg"]   = ear_smooth
 
+        # ── PERCLOS Tracker (L1 - new) ────────────────────────────────────
+        perclos_ratio = 0.0
+        if ear_smooth is not None:
+            perclos_ratio = self.perclos_tracker.update(timestamp_ms, ear_smooth)
+        
         # ── MLP per-frame ──────────────────────────────────────────────────
         has_neck = 0 if math.isnan(feat.get("neck_tilt", float("nan"))) else 1
         mlp_row = np.array(
@@ -332,4 +345,5 @@ class FusionState:
             "yawn_alarm":    yawn_alarm,
             "ema_prob":      round(self.ema_prob, 4),
             "alarm_on":      self.alarm_on,
+            "perclos":       round(perclos_ratio, 4),  # L1 - new field
         }
