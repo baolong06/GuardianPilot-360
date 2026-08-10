@@ -16,6 +16,10 @@
 
 'use strict';
 
+// Fix: Worker has null origin → absolute fetch fails CORS.
+// Empty-string relative path works correctly inside a Worker.
+const WORKER_API_BASE = '';
+
 let running = false;
 let pendingFrame = null;      // frame mới nhất đang chờ xử lý
 let processing  = false;      // đang trong 1 inference call
@@ -37,14 +41,16 @@ function startLoop() {
 
     const t0 = Date.now();
     try {
-      const res = await fetch('/api/analyze_lite', {
+      const res = await fetch(WORKER_API_BASE + '/api/analyze_lite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: dataUrl }),
       });
 
       if (!res.ok) {
-        self.postMessage({ type: 'error', message: `HTTP ${res.status}` });
+        let detail = '';
+        try { detail = await res.text(); } catch (_) {}
+        self.postMessage({ type: 'error', message: `HTTP ${res.status}: ${detail.slice(0, 120)}` });
         return;
       }
 

@@ -8,6 +8,7 @@ __pycache__/
 models/*.keras
 models/*.pkl
 models/*.task
+models/**/*.weights.h5
 results/*.keras
 results/*.pkl
 results/*.task
@@ -25,3 +26,7 @@ nb_out.txt
 # Build / cache
 *.log
 results/__huggingface_repos__.json
+
+# Runtime event log / snapshots
+data/events.db
+data/snapshots/

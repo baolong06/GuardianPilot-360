@@ -13,20 +13,23 @@ from collections import deque
 import numpy as np
 
 from .perclos import PERCLOSTracker
+from .scoring import DrowsinessScorer
+from .frequency import EventFrequencyCounter
+from .looking_away import LookingAwayDetector
 
 # ── Hyperparameters (từ notebook) ────────────────────────────────────────────
 WINDOW_SIZE         = 30     # số frame trong cửa sổ LSTM
-EMA_ALPHA           = 0.5    # nhanh — bắt cú gật thoáng qua 200-300ms
+EMA_ALPHA           = 0.3    # giảm từ 0.5 → 0.3 (ổn định hơn, tránh flap)
 NECK_BASELINE_ALPHA = 0.005  # freeze chậm — baseline KHÔNG drift theo cú gật (5x chậm hơn trước)
 NECK_TILT_ALARM_DEG = 15.0   # threshold cho alarm (tăng từ 8.0)
-HYSTERESIS_ON       = 0.55   # bắt tín hiệu yếu
-HYSTERESIS_OFF      = 0.30
+HYSTERESIS_ON       = 0.65   # tăng từ 0.55 → 0.65 (model thật trả ~0.59 cho eyes-open)
+HYSTERESIS_OFF      = 0.35   # tăng từ 0.30 → 0.35
 MIN_ON_SEC          = 0.5    # cú gật phải kéo dài >= 0.5s mới trigger (tăng từ 0.15)
 MIN_OFF_SEC         = 0.5
 
 # Eye-closure rule (mô phỏng neck-tilt rule, phản ứng nhanh với sleepy eye)
 EAR_LPF_ALPHA       = 0.5    # low-pass filter cho ear_avg trước khi feed model + rule
-EYE_CLOSED_THRESH   = 0.18   # ngưỡng mắt nhắm (sau khi low-pass) — cao hơn để tránh nhầm chớp mắt
+EYE_CLOSED_THRESH   = 0.16   # giảm từ 0.18 → 0.16 (chỉ trigger khi thực sự nhắm, tránh EAR=0.18 bị coi là microsleep)
 EYE_CLOSED_ON_SEC   = 0.8    # mắt nhắm liên tục >= 0.8s  → ép combined >= HYSTERESIS_ON
 EYE_CLOSED_HARD_SEC = 1.2    # mắt nhắm liên tục >= 1.2s (microsleep thật) → ép combined >= 0.85
 
@@ -76,11 +79,21 @@ class FusionState:
         self.yawn_open_started_ms: float | None = None
         self.yawn_last_trigger_ms:  float = -1e9  # đã trigger lần cuối ở timestamp nào
         
-        # PERCLOS tracker (L1 - new)
+        # PERCLOS tracker (L1)
         self.perclos_tracker: PERCLOSTracker = PERCLOSTracker(
             window_sec=30.0,
             eye_closed_threshold=EYE_CLOSED_THRESH
         )
+        # Drowsiness scoring state machine (L2)
+        self.scorer: DrowsinessScorer = DrowsinessScorer()
+        # Frequency counters (L10 / L11)
+        self.head_nod_counter = EventFrequencyCounter(window_sec=60.0)
+        self.yawn_counter = EventFrequencyCounter(window_sec=60.0)
+        # Looking-away (L18)
+        self.looking_away = LookingAwayDetector()
+        # Optional context risk (set from app before/after update)
+        self.risk_multiplier: float = 1.0
+        self.phone_suspected: bool = False
 
     def reset(self):
         self.__init__()
@@ -337,13 +350,48 @@ class FusionState:
         elif self.alarm_on and self.time_below_off_ms >= MIN_OFF_SEC * 1000:
             self.alarm_on = False
 
+        # ── Looking away (L18) ────────────────────────────────────────────
+        yaw_v = feat.get("yaw", float("nan"))
+        yaw_for_la = None if (isinstance(yaw_v, float) and math.isnan(yaw_v)) else yaw_v
+        la = self.looking_away.update(timestamp_ms, yaw_for_la)
+
+        # ── Drowsiness Scoring Engine (L2) ────────────────────────────────
+        # State machine 5 cấp chạy song song với alarm_on (binary).
+        # Không ép alarm_on từ scorer — tránh phá escape-valve / neck-release.
+        driver_state, drowsiness_score = self.scorer.update(
+            timestamp_ms=timestamp_ms,
+            p_mlp_drowsy=p_mlp_drowsy,
+            p_lstm_drowsy=p_lstm_drowsy,
+            perclos=perclos_ratio,
+            eye_closed_streak_ms=self.eye_closed_streak_ms,
+            neck_alarm=neck_alarm,
+            eye_alarm=eye_alarm,
+            yawn_alarm=yawn_alarm,
+            looking_away=la["looking_away"],
+            phone_suspected=self.phone_suspected,
+            risk_multiplier=self.risk_multiplier,
+        )
+
+        # ── Frequency counters (L10 / L11) ────────────────────────────────
+        head_nod_count = self.head_nod_counter.update(timestamp_ms, neck_alarm)
+        yawn_count = self.yawn_counter.update(timestamp_ms, yawn_alarm)
+
         return {
-            "p_mlp_drowsy":  round(p_mlp_drowsy, 4),
-            "p_lstm_drowsy": round(p_lstm_drowsy, 4) if p_lstm_drowsy is not None else None,
-            "neck_alarm":    neck_alarm,
-            "eye_alarm":     eye_alarm,
-            "yawn_alarm":    yawn_alarm,
-            "ema_prob":      round(self.ema_prob, 4),
-            "alarm_on":      self.alarm_on,
-            "perclos":       round(perclos_ratio, 4),  # L1 - new field
+            "p_mlp_drowsy":      round(p_mlp_drowsy, 4),
+            "p_lstm_drowsy":     round(p_lstm_drowsy, 4) if p_lstm_drowsy is not None else None,
+            "neck_alarm":        neck_alarm,
+            "eye_alarm":         eye_alarm,
+            "yawn_alarm":        yawn_alarm,
+            "ema_prob":          round(self.ema_prob, 4),
+            "alarm_on":          self.alarm_on,
+            "perclos":           round(perclos_ratio, 4),
+            "perclos_ratio":     round(perclos_ratio, 4),
+            "drowsiness_state":  driver_state.name,
+            "drowsiness_score":  round(drowsiness_score, 4),
+            "alert_level":       int(driver_state),
+            "head_nod_count_window": head_nod_count,
+            "yawn_count_window": yawn_count,
+            **la,
+            "phone_suspected":   self.phone_suspected,
+            "risk_multiplier":   self.risk_multiplier,
         }

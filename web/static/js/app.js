@@ -1,5 +1,9 @@
 'use strict';
 
+// ── Fix: Worker origin is null → absolute fetch fails CORS. ────────────────
+// Empty string = same-origin relative URL works correctly inside a Worker.
+const WORKER_API_BASE = '';
+
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const btnInit          = document.getElementById('btnInit');
 const systemBadge      = document.getElementById('systemBadge');
@@ -123,8 +127,14 @@ btnInit.addEventListener('click', async () => {
     const data = await res.json();
     if (data.ok) {
       initialized = true;
-      setBadge('ready', 'Sẵn sàng');
-      setStatus('Hệ thống sẵn sàng.');
+      if (data.rule_only_mode) {
+        setBadge('ready', 'Rule-only');
+        setStatus('Cảnh báo: đang chạy rule-only (chưa có full ML). Chạy tools/convert_models.py');
+      } else {
+        setBadge('ready', 'Sẵn sàng');
+        const mode = data.load_mode ? ` (${data.load_mode})` : '';
+        setStatus('Hệ thống sẵn sàng' + mode + '.');
+      }
       btnAnalyzeLive.disabled   = camStream === null;
       btnAnalyzeUpload.disabled = previewImg.classList.contains('hidden');
     } else {

@@ -1,0 +1,13 @@
+services:
+  guardianpilot:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - SAVE_FACE_SNAPSHOTS=false
+      - ALLOW_RULE_ONLY_MODE=true
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models:ro
+      - ./results:/app/results:ro
+    restart: unless-stopped

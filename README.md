@@ -27,6 +27,34 @@ python app.py --port 5000
 
 Mở trình duyệt: http://127.0.0.1:5000
 
+## Model artifacts & Docker
+
+Chạy convert **một lần** trước khi deploy Docker (full ML mode):
+
+```bash
+python tools/convert_models.py --in-place
+```
+
+File cần có (ưu tiên `models/compatible/`):
+
+- `mlp_drowsiness_landmark.weights.h5`
+- `lstm_drowsiness_landmark.weights.h5`
+- `landmark_scaler.pkl`
+- `lstm_seq_scaler.pkl`
+- `holistic_landmarker.task`
+
+Nếu thiếu hoặc lỗi tương thích Keras, server tự fallback **rule-only mode** (eye/neck/yawn rules).
+Tắt fallback: `ALLOW_RULE_ONLY_MODE=false`.
+
+**Test webcam end-to-end:** xem [docs/WEBCAM_E2E.md](docs/WEBCAM_E2E.md)
+
+```bash
+docker compose build && docker compose up -d
+curl -X POST http://localhost:5000/api/init
+```
+
+Kỳ vọng: `"rule_only_mode": false`, `"load_mode": "weights"`.
+
 ## Pipeline
 
 ```
