@@ -24,14 +24,14 @@ let running = false;
 let pendingFrame = null;      // frame mới nhất đang chờ xử lý
 let processing  = false;      // đang trong 1 inference call
 
-// Interval loop — polling pendingFrame mỗi ~80ms (≈12 FPS inference)
-// Điều này tách hoàn toàn khỏi display loop
-const INFERENCE_INTERVAL_MS = 100; // ~10 inference/s — đủ cho drowsiness detection
+// Interval loop — polling pendingFrame (mặc định 100ms, edge profile: 200ms)
+let INFERENCE_INTERVAL_MS = 100;
 
 let loopHandle = null;
 
 function startLoop() {
   if (loopHandle) return;
+  running = true;
   loopHandle = setInterval(async () => {
     if (!running || processing || !pendingFrame) return;
 
@@ -86,6 +86,10 @@ self.onmessage = (e) => {
 
   if (msg.type === 'start') {
     running = true;
+    if (msg.profile && msg.profile.inference_interval_ms) {
+      INFERENCE_INTERVAL_MS = msg.profile.inference_interval_ms;
+    }
+    stopLoop();
     startLoop();
     self.postMessage({ type: 'log', message: 'Worker started.' });
 

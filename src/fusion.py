@@ -13,6 +13,7 @@ from collections import deque
 import numpy as np
 
 from .perclos import PERCLOSTracker
+from .runtime_profile import get_runtime_profile
 from .scoring import DrowsinessScorer
 from .frequency import EventFrequencyCounter
 from .looking_away import LookingAwayDetector
@@ -26,6 +27,11 @@ HYSTERESIS_ON       = 0.65   # tăng từ 0.55 → 0.65 (model thật trả ~0.5
 HYSTERESIS_OFF      = 0.35   # tăng từ 0.30 → 0.35
 MIN_ON_SEC          = 0.5    # cú gật phải kéo dài >= 0.5s mới trigger (tăng từ 0.15)
 MIN_OFF_SEC         = 0.5
+
+# Pitch-based head nod (face solvePnP — không cần pose vai, phù hợp edge/IR cam)
+PITCH_BASELINE_ALPHA = 0.005
+PITCH_NOD_PEAK_DEG   = 12.0   # thấp hơn neck pose vì pitch nhạy hơn khi cúi đầu
+PITCH_NOD_CURRENT_DEG = 8.0
 
 # Eye-closure rule (mô phỏng neck-tilt rule, phản ứng nhanh với sleepy eye)
 EAR_LPF_ALPHA       = 0.5    # low-pass filter cho ear_avg trước khi feed model + rule
@@ -74,6 +80,9 @@ class FusionState:
         # Peak detector: gật gù ngắn ~200ms, delta nhỏ nhưng nhọn
         # Track max |neck_tilt - baseline| trong 600ms gần nhất
         self.neck_peak_buffer: deque = deque(maxlen=30)  # ~600ms @30fps
+        # Pitch nod (face-only fallback khi pose mất ở độ phân giải thấp)
+        self.pitch_baseline:    float | None = None
+        self.pitch_peak_buffer: deque        = deque(maxlen=30)
         # YawnDetector state
         self.yawn_state: str = "IDLE"          # IDLE | OPENING | CONFIRMED | COOLDOWN
         self.yawn_open_started_ms: float | None = None
@@ -179,6 +188,27 @@ class FusionState:
             if current_delta < 6.0 and not self.alarm_on:
                 self.neck_peak_buffer.clear()
 
+        # ── Pitch-based head nod (face-only, edge-safe) ───────────────────
+        # Pose vai thường mất ở 256×192 / webcam góc hẹp → neck_tilt = NaN.
+        # Pitch từ solvePnP (face mesh) vẫn ổn định — chuẩn DMS trên ô tô.
+        use_pitch_nod = get_runtime_profile().get("use_pitch_nod", True)
+        pitch = feat.get("pitch", float("nan"))
+        if use_pitch_nod and not math.isnan(pitch):
+            if self.pitch_baseline is None:
+                self.pitch_baseline = pitch
+            elif not self.alarm_on:
+                self.pitch_baseline = (
+                    (1 - PITCH_BASELINE_ALPHA) * self.pitch_baseline
+                    + PITCH_BASELINE_ALPHA * pitch
+                )
+            pitch_delta = abs(pitch - self.pitch_baseline)
+            self.pitch_peak_buffer.append(pitch_delta)
+            peak_pitch = max(self.pitch_peak_buffer) if self.pitch_peak_buffer else 0.0
+            if peak_pitch > PITCH_NOD_PEAK_DEG and pitch_delta > PITCH_NOD_CURRENT_DEG:
+                neck_alarm = True
+            if pitch_delta < 4.0 and not self.alarm_on:
+                self.pitch_peak_buffer.clear()
+
         # Neck-tilt release: khi alarm đang bật do neck-tilt, nếu neck_tilt
         # đã về sát baseline (< 8°) liên tục 0.5s → force tắt alarm.
         if self.alarm_on and not math.isnan(neck_tilt) and self.neck_baseline is not None:
@@ -249,12 +279,13 @@ class FusionState:
             if (timestamp_ms - self.yawn_last_trigger_ms) >= YAWN_COOLDOWN_SEC * 1000:
                 self.yawn_state = "IDLE"
 
-        # ── LSTM trên cửa sổ gần nhất ─────────────────────────────────────
+        # ── LSTM trên cửa sổ gần nhất (có thể tắt ở edge profile) ─────────
+        enable_lstm = get_runtime_profile().get("enable_lstm", True)
         self.feature_buffer.append(
             [feat.get(c, float("nan")) for c in LSTM_FEAT_COLS]
         )
         p_lstm_drowsy = None
-        if len(self.feature_buffer) == WINDOW_SIZE:
+        if enable_lstm and len(self.feature_buffer) == WINDOW_SIZE:
             import pandas as pd
             seq = pd.DataFrame(
                 list(self.feature_buffer), columns=list(LSTM_FEAT_COLS)

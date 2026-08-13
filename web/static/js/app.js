@@ -79,7 +79,24 @@ let camStream    = null;
 let videoRunning = false;
 let videoAbort   = false;
 
-// ── Live mode state (new architecture) ────────────────────────────────────
+// ── Runtime profile (dev vs automotive edge) ─────────────────────────────
+let runtimeProfile = {
+  inference_interval_ms: 100,
+  inference_width: 320,
+  inference_height: 240,
+  display_fps_cap: 30,
+};
+
+async function loadRuntimeProfile() {
+  try {
+    const res = await fetch('/api/runtime-profile');
+    const data = await res.json();
+    if (data.ok) {
+      runtimeProfile = data;
+      console.log('[Profile]', data.profile, data.description);
+    }
+  } catch (_) { /* giữ default */ }
+}
 let liveActive      = false;
 let rafHandle       = null;      // requestAnimationFrame handle
 let inferenceWorker = null;      // Web Worker
@@ -122,6 +139,7 @@ btnInit.addEventListener('click', async () => {
   setBadge('loading', 'Đang khởi tạo…');
   setStatus('Đang load model (có thể mất 30-60s)…');
   btnInit.disabled = true;
+  await loadRuntimeProfile();
   try {
     const res = await fetch('/api/init', { method: 'POST' });
     const data = await res.json();
@@ -209,7 +227,7 @@ function startLive() {
   inferenceWorker = new Worker('/static/js/worker.js');
   inferenceWorker.onmessage = onWorkerMessage;
   inferenceWorker.onerror   = (e) => console.error('[Worker error]', e);
-  inferenceWorker.postMessage({ type: 'start' });
+  inferenceWorker.postMessage({ type: 'start', profile: runtimeProfile });
 
   // ── Start Display Loop via requestAnimationFrame ──
   startDisplayLoop();
@@ -250,7 +268,10 @@ function stopLive() {
 // ── Display Loop — runs at full camera FPS via requestAnimationFrame ──────
 // This NEVER waits for inference. It just draws whatever is available.
 let lastFrameSentTs = 0;
-const SEND_INTERVAL_MS = 100; // send frame to worker every 100ms (10/s)
+
+function getSendIntervalMs() {
+  return runtimeProfile.inference_interval_ms || 100;
+}
 
 function startDisplayLoop() {
   function loop() {
@@ -281,8 +302,8 @@ function startDisplayLoop() {
       displayFrameCount++;
     }
 
-    // ── Send frame to worker (rate-limited to SEND_INTERVAL_MS) ──
-    if (now - lastFrameSentTs >= SEND_INTERVAL_MS) {
+    // ── Send frame to worker (rate-limited theo EDGE_PROFILE) ──
+    if (now - lastFrameSentTs >= getSendIntervalMs()) {
       lastFrameSentTs = now;
       sendFrameToWorker(now);
     }
@@ -306,22 +327,28 @@ function startDisplayLoop() {
   rafHandle = requestAnimationFrame(loop);
 }
 
-// ── Send a downscaled frame to inference worker ───────────────────────────
-const INFERENCE_W = 320;
-const INFERENCE_H = 240;
+// Inference canvas size — theo runtime profile (edge: 256×192)
+function getInferenceSize() {
+  return {
+    w: runtimeProfile.inference_width  || 320,
+    h: runtimeProfile.inference_height || 240,
+  };
+}
 
-// Reuse small canvas for encoding
+// Reuse small canvas for encoding (resize khi profile đổi)
 const _smallCanvas  = document.createElement('canvas');
-_smallCanvas.width  = INFERENCE_W;
-_smallCanvas.height = INFERENCE_H;
 const _smallCtx     = _smallCanvas.getContext('2d');
 
 function sendFrameToWorker(timestamp) {
   if (!inferenceWorker || !liveActive) return;
   if (webcamEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
 
-  // Downscale to 320×240 for inference (faster encode + faster MediaPipe)
-  _smallCtx.drawImage(webcamEl, 0, 0, INFERENCE_W, INFERENCE_H);
+  const { w: inferW, h: inferH } = getInferenceSize();
+  if (_smallCanvas.width !== inferW || _smallCanvas.height !== inferH) {
+    _smallCanvas.width  = inferW;
+    _smallCanvas.height = inferH;
+  }
+  _smallCtx.drawImage(webcamEl, 0, 0, inferW, inferH);
   const dataUrl = _smallCanvas.toDataURL('image/jpeg', 0.75);
 
   inferenceWorker.postMessage({ type: 'frame', dataUrl, timestamp });
@@ -638,6 +665,30 @@ function drawInferenceOverlay(ctx, w, h, data) {
   ctx.fillStyle = 'rgba(200,200,200,0.85)';
   if (ear != null) ctx.fillText(`EAR ${ear.toFixed(3)}`, w - 115, 22);
   if (mar != null) ctx.fillText(`MAR ${mar.toFixed(3)}`, w - 115, 38);
+
+  // Face size (px + %frame) — giúp user biết mình đang ở khoảng cách nào
+  if (face_lm && face_lm.length >= 2) {
+    let minX = 1, minY = 1, maxX = 0, maxY = 0;
+    const n = face_lm.length / 2;
+    for (let i = 0; i < n; i++) {
+      const x = face_lm[i * 2];
+      const y = face_lm[i * 2 + 1];
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    const fw = Math.round((maxX - minX) * w);
+    const fh = Math.round((maxY - minY) * h);
+    const ratio = ((maxX - minX) * (maxY - minY) * 100).toFixed(1);
+    // Màu sắc theo khoảng cách: < 50px cam (xa), 50-90 vàng (vừa), > 90 xanh (gần)
+    let distColor = 'rgba(140,140,140,0.85)';
+    if (fw >= 90)      distColor = 'rgba(120,220,140,0.95)';   // gần
+    else if (fw >= 50) distColor = 'rgba(220,200,80,0.95)';    // vừa
+    else               distColor = 'rgba(255,140,80,0.95)';    // xa
+    ctx.fillStyle = distColor;
+    ctx.fillText(`Face ${fw}×${fh}px (${ratio}%)`, w - 165, 54);
+  }
 
   // Red border flash when drowsy
   if (alarmOn) {

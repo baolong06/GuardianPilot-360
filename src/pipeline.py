@@ -27,18 +27,24 @@ _holistic: mp_vision.HolisticLandmarker | None = None
 _model_path: str | None = None
 _legacy_holistic = None
 
-# ── Frame resize config ──────────────────────────────────────────────────────
-# MediaPipe Holistic Landmarker graph uses SegmentationSmoothingCalculator
-# which requires ALL frames in a session to have the same dimensions.
-# Otherwise: "current_mat->rows == previous_mat->rows (600 vs 240)" → crash.
-# Solution: resize every frame to a fixed size before inference.
-MEDIAPIPE_INPUT_WIDTH  = 320
-MEDIAPIPE_INPUT_HEIGHT = 240
+from .runtime_profile import get_runtime_profile
+
+# ── Frame resize config (theo EDGE_PROFILE) ──────────────────────────────────
+_profile = get_runtime_profile()
+MEDIAPIPE_INPUT_WIDTH  = int(_profile["mediapipe_width"])
+MEDIAPIPE_INPUT_HEIGHT = int(_profile["mediapipe_height"])
 MEDIAPIPE_INPUT_SIZE   = (MEDIAPIPE_INPUT_WIDTH, MEDIAPIPE_INPUT_HEIGHT)
 
 # ── Primary person selection config ────────────────────────────────────────────
-MIN_FACE_SIZE_PX = 60      # face tối thiểu 60px (small faces = false positive)
-MIN_FACE_SIZE_RATIO = 0.02  # face >= 2% của frame
+# Face size thresholds — giảm để nhận diện được khi người ngồi xa camera.
+# Trade-off: threshold thấp hơn → nhạy hơn với small faces, nhưng có thể pick up
+# face artifact (poster, ảnh nhỏ trên tường). Anti-noise: chỉ giảm threshold khi
+# single-person (n_faces=1) — nếu multi-person vẫn giữ threshold cao để tránh
+# nhầm person xa với face artifact.
+MIN_FACE_SIZE_PX = 35       # giảm từ 60 → 35 (face xa ~80px ở 640x480, sau resize về 480x360 ~60px)
+MIN_FACE_SIZE_RATIO = 0.01  # giảm từ 0.02 → 0.01 (1% của frame là hợp lý cho face xa)
+MIN_FACE_SIZE_PX_STRICT = 60  # threshold cũ — dùng cho multi-person để tránh false positive
+MIN_FACE_SIZE_RATIO_STRICT = 0.02
 
 
 @dataclass
@@ -48,6 +54,7 @@ class DebugInfo:
     face_scores: List[dict] = field(default_factory=list)
     primary_idx: int = -1
     crop_region: Optional[Tuple[int,int,int,int]] = None
+    distant_fallback: bool = False  # True nếu primary được chọn qua distance fallback (single-person)
 
 
 class TransformedResult:
@@ -121,27 +128,43 @@ def _estimate_face_bbox(face_landmarks, img_w, img_h) -> Tuple[int,int,int,int]:
 def _score_person(
     face_bbox: Tuple[int,int,int,int],
     pose_landmarks,
-    img_w: int, img_h: int
+    img_w: int, img_h: int,
+    n_faces_total: int = 1,
 ) -> Tuple[float, dict]:
     """
     Tính score cho mỗi person để chọn primary.
-    
+
     Scoring factors:
     1. Face size: lớn hơn = gần hơn = ưu tiên
-    2. Center proximity: gần center frame tốt hơn  
+    2. Center proximity: gần center frame tốt hơn
     3. Bottom position: lower-center = vị trí lái xe
     4. Has pose: có pose landmarks = body visible = real person
+
+    Distance handling (khi người ngồi xa camera):
+    - Multi-person (n_faces_total > 1): strict threshold — giữ nguyên
+      MIN_FACE_SIZE_PX_STRICT/RATIO để tránh nhầm person xa với poster/artifact.
+    - Single-person (n_faces_total == 1): relaxed threshold — dùng
+      MIN_FACE_SIZE_PX/RATIO thấp hơn để KHÔNG bỏ lỡ user khi chỉ có 1 mặt.
     """
     x_min, y_min, x_max, y_max = face_bbox
     fw, fh = x_max - x_min, y_max - y_min
-    
+
     # 1. Size score
     face_area = fw * fh
     size_ratio = face_area / (img_w * img_h)
-    
+
+    # Chọn threshold theo context: single-person → cho phép face nhỏ; multi → strict
+    if n_faces_total <= 1:
+        min_px    = MIN_FACE_SIZE_PX
+        min_ratio = MIN_FACE_SIZE_RATIO
+    else:
+        min_px    = MIN_FACE_SIZE_PX_STRICT
+        min_ratio = MIN_FACE_SIZE_RATIO_STRICT
+
     # Skip tiny faces
-    if fw < MIN_FACE_SIZE_PX or size_ratio < MIN_FACE_SIZE_RATIO:
-        return -1.0, {"reason": "too_small"}
+    if fw < min_px or size_ratio < min_ratio:
+        return -1.0, {"reason": "too_small", "fw": fw, "fh": fh,
+                       "size_ratio": round(size_ratio, 4)}
     
     size_score = size_ratio * 2000  # scale up
     
@@ -369,24 +392,41 @@ def run_holistic(
             pose_lm = pose_landmarks_list[i]
 
         bbox = _estimate_face_bbox(face_lm, img_w, img_h)
-        score, info = _score_person(bbox, pose_lm, img_w, img_h)
+        # Truyền n_faces để _score_person chọn threshold phù hợp
+        # (single-person → relaxed, multi-person → strict).
+        score, info = _score_person(bbox, pose_lm, img_w, img_h,
+                                    n_faces_total=n_faces)
         info["idx"] = i
         scored.append((score, info))
     
     # Sort by score descending
     scored.sort(key=lambda x: x[0], reverse=True)
     debug.face_scores = [{"score": s, **c} for s, c in scored]
-    
+
     # ── Step 3: Select primary ───────────────────────────────────────────────
     primary_score, primary_info = scored[0]
-    
-    if primary_score < 0:
+
+    # ── Distance fallback (single-person case) ─────────────────────────────
+    # Khi user ngồi xa, face có thể < MIN_FACE_SIZE_PX → bị reject với score=-1.
+    # Nếu chỉ có 1 person duy nhất trong frame → KHÔNG có candidate khác để
+    # chọn. Thay vì trả None (khiến user phải "lại gần" mới hoạt động), ta
+    # dùng luôn person duy nhất này làm primary với score thấp + flag
+    # "distant" để các module downstream biết mà giảm confidence (vd: bỏ
+    # qua LSTM, tăng hysteresis threshold một chút — chưa implement ở đây).
+    if primary_score < 0 and n_faces == 1:
+        only_score, only_info = scored[0]
+        primary_score = 0.0  # cho qua với score=0
+        primary_info = only_info
+        primary_info["distant"] = True
+        primary_info["reason"] = "distant_single_person_fallback"
+    elif primary_score < 0:
         if return_debug:
             return None, debug
         return None
-    
+
     primary_idx = primary_info["idx"]
     debug.primary_idx = primary_idx
+    debug.distant_fallback = primary_info.get("distant", False)
     
     # ── Step 4: Nếu có nhiều hơn 1 person, crop & re-run ───────────────────
     if n_faces > 1:

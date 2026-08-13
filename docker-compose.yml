@@ -6,6 +6,8 @@ services:
     environment:
       - SAVE_FACE_SNAPSHOTS=false
       - ALLOW_RULE_ONLY_MODE=true
+      # edge = tiết kiệm CPU/RAM (5 FPS infer, tắt LSTM, 256×192)
+      # - EDGE_PROFILE=edge
     volumes:
       - ./data:/app/data
       - ./models:/app/models:ro

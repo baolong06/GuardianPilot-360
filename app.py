@@ -37,6 +37,9 @@ from src.phone_distraction import (
 )
 from src import thresholds as threshold_store
 from src.model_loader import load_drowsiness_bundle
+from src.runtime_profile import apply_process_limits, get_runtime_profile
+
+apply_process_limits()
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 MODELS_DIR = BASE_DIR / "models"
@@ -474,6 +477,12 @@ def api_init():
             return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/api/runtime-profile")
+def api_runtime_profile():
+    """Cấu hình runtime theo EDGE_PROFILE (dev vs automotive edge)."""
+    return jsonify({"ok": True, **get_runtime_profile()})
+
+
 @app.route("/api/status")
 def api_status():
     return jsonify({
@@ -483,6 +492,7 @@ def api_status():
         "alert_level": _alert_mgr.alert_level,
         "rule_only_mode": _rule_only_mode,
         "load_mode": _model_load_mode,
+        "runtime_profile": get_runtime_profile().get("profile"),
     })
 
 
