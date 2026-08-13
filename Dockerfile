@@ -15,6 +15,8 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 ENV SAVE_FACE_SNAPSHOTS=false
 ENV MEDIAPIPE_DISABLE_GPU=1
+ENV PORT=5000
 EXPOSE 5000
 
-CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "5000"]
+# Render injects $PORT; default 5000 for local/docker-compose.
+CMD ["sh", "-c", "python app.py --host 0.0.0.0 --port ${PORT:-5000}"]
