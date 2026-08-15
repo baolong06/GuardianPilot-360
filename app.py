@@ -260,7 +260,10 @@ def _load_models():
         _init_error = None
         _rule_only_mode = False
     except Exception as exc:
-        allow_rule_only = os.getenv("ALLOW_RULE_ONLY_MODE", "true").lower() in {
+        # P0-6: production phải FAIL nếu full model không load được.
+        # Default ALLOW_RULE_ONLY_MODE=false (block silent fallback).
+        # Dev/CI muốn rule-only: ALLOW_RULE_ONLY_MODE=true python app.py
+        allow_rule_only = os.getenv("ALLOW_RULE_ONLY_MODE", "false").lower() in {
             "1", "true", "yes", "on"
         }
         if not allow_rule_only:
@@ -532,6 +535,7 @@ def api_analyze():
         veh = _driving_ctx.snapshot()
 
         if feat is None:
+            _fusion.touch(ts_ms)  # sync last_ts_ms — prevent stale-dt on next face
             obstructed = _camera_obs.update(False, ts_ms)
             resp = {
                 "ok":               True,
@@ -672,6 +676,7 @@ def api_analyze_lite():
             }
 
         if feat is None:
+            _fusion.touch(ts_ms)  # sync last_ts_ms — prevent stale-dt on next face
             obstructed = _camera_obs.update(False, ts_ms)
             return jsonify({
                 "ok":               True,

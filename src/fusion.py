@@ -109,6 +109,23 @@ class FusionState:
     def reset(self):
         self.__init__()
 
+    def touch(self, timestamp_ms: float):
+        """Đồng bộ last_ts_ms khi không có face (no-face gap).
+        Tránh dt_ms = now - last_face_ts gây reset streak watchdog logic
+        khi mặt xuất hiện lại sau nhiều giây.
+        """
+        self.last_ts_ms = timestamp_ms
+
+    # ── Backward-compat alias (các API cũ dùng _fusion.ear_smooth) ─────
+    # ear_avg_smooth thay thế ear_smooth sau khi tách per-eye LPF.
+    @property
+    def ear_smooth(self):
+        return self.ear_avg_smooth
+
+    @ear_smooth.setter
+    def ear_smooth(self, value):
+        self.ear_avg_smooth = value
+
     def update(self, feat: dict, mlp_model, lstm_model,
                mlp_scaler, lstm_scaler,
                timestamp_ms: float | None = None) -> dict:

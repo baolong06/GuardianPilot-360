@@ -74,6 +74,11 @@ class InferenceWatchdog:
     """
     Thread giám sát: nếu không có kết quả inference mới trong stale_sec giây
     → warning + optional reload callback.
+
+    P0-5: tránh reload spam khi model load fail liên tục.
+    - on_stale() chỉ được gọi khi đủ reload_cooldown_sec kể từ lần reload gần nhất.
+    - Sau max_reload_attempts lần fail liên tiếp, watchdog ngừng retry
+      (chỉ log + báo status, không gọi callback nữa) cho đến khi có heartbeat.
     """
 
     def __init__(
@@ -81,15 +86,22 @@ class InferenceWatchdog:
         stale_sec: float = 5.0,
         check_interval_sec: float = 1.0,
         on_stale: Optional[Callable[[], None]] = None,
+        reload_cooldown_sec: float = 30.0,
+        max_reload_attempts: int = 3,
     ):
         self.stale_sec = stale_sec
         self.check_interval_sec = check_interval_sec
         self.on_stale = on_stale
+        self.reload_cooldown_sec = reload_cooldown_sec
+        self.max_reload_attempts = max_reload_attempts
         self._last_inference_ts = time.time()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._stale_count = 0
+        self._reload_count = 0
+        self._last_reload_ts: float | None = None
+        self._reload_disabled = False  # lock-out sau khi vượt max_reload_attempts
         self._armed = False  # chỉ giám sát sau lần inference đầu
 
     def heartbeat(self):
@@ -97,6 +109,9 @@ class InferenceWatchdog:
         with self._lock:
             self._last_inference_ts = time.time()
             self._armed = True
+            # Bất kỳ inference thành công nào đều reset lock-out state
+            self._reload_disabled = False
+            self._reload_count = 0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -121,6 +136,8 @@ class InferenceWatchdog:
                 "last_inference_age_sec": round(age, 2),
                 "stale_sec": self.stale_sec,
                 "stale_count": self._stale_count,
+                "reload_count": self._reload_count,
+                "reload_disabled": self._reload_disabled,
                 "running": bool(self._thread and self._thread.is_alive()),
             }
 
@@ -129,6 +146,8 @@ class InferenceWatchdog:
             with self._lock:
                 armed = self._armed
                 age = time.time() - self._last_inference_ts
+                reload_disabled = self._reload_disabled
+                last_reload = self._last_reload_ts
             if not armed:
                 continue
             if age > self.stale_sec:
@@ -139,8 +158,23 @@ class InferenceWatchdog:
                     self.stale_sec,
                     self._stale_count,
                 )
-                if self.on_stale is not None:
-                    try:
-                        self.on_stale()
-                    except Exception:
-                        logger.exception("Watchdog on_stale callback failed")
+                if self.on_stale is None or reload_disabled:
+                    continue
+                # Cooldown gate — chỉ reload mỗi reload_cooldown_sec giây
+                now = time.time()
+                if last_reload is not None and (now - last_reload) < self.reload_cooldown_sec:
+                    continue
+                with self._lock:
+                    self._last_reload_ts = now
+                    self._reload_count += 1
+                    if self._reload_count > self.max_reload_attempts:
+                        self._reload_disabled = True
+                        logger.error(
+                            "Watchdog: max reload attempts (%d) exceeded — "
+                            "disabling on_stale until next heartbeat",
+                            self.max_reload_attempts,
+                        )
+                try:
+                    self.on_stale()
+                except Exception:
+                    logger.exception("Watchdog on_stale callback failed")
