@@ -21,10 +21,16 @@
       </div>
     </div>
     <div class="topbar-right">
+      <a href="/dashboard" class="btn btn-ghost" title="Quản lý đội xe">🚗 Fleet Dashboard</a>
+      <button id="btnMute" class="btn btn-ghost" title="Tắt/Bật cảnh báo âm thanh">🔔</button>
+      <button id="btnHudMode" class="btn btn-ghost" title="Chế độ HUD">⬛ HUD</button>
       <span id="systemBadge" class="badge badge-idle">Chưa khởi tạo</span>
       <button id="btnInit" class="btn btn-primary">Khởi tạo</button>
     </div>
   </header>
+
+  <!-- HUD Exit button -->
+  <button id="hudExitBtn" class="hud-exit-btn hidden">✕ Exit HUD</button>
 
   <main class="layout">
 
@@ -111,16 +117,27 @@
     </section>
 
     <!-- Cột phải: kết quả -->
-    <section class="panel result-panel" id="resultPanel" data-alarm="off">
+    <section class="panel result-panel" id="resultPanel" data-alarm="off" data-state="normal">
 
       <!-- Alert card -->
-      <div class="alert-card" id="alertCard" data-alarm="off">
+      <div class="alert-card" id="alertCard" data-alarm="off" data-state="normal">
         <div class="alert-label" id="alertLabel">NORMAL</div>
         <div class="alert-prob"  id="alertProb">p = 0.00</div>
         <div class="alert-meta">
           <span>MLP <strong id="mlpProb">—</strong></span>
           <span>LSTM <strong id="lstmProb">—</strong></span>
           <span>EMA <strong id="emaProb">—</strong></span>
+        </div>
+      </div>
+
+      <!-- PERCLOS Gauge bar -->
+      <div class="perclos-gauge" id="perclosGauge">
+        <div class="gauge-header">
+          <span>PERCLOS (30s)</span>
+          <span id="perclosValue" class="gauge-value">0%</span>
+        </div>
+        <div class="gauge-bar">
+          <div id="perclosBar" class="gauge-fill" style="width: 0%;"></div>
         </div>
       </div>
 
@@ -137,21 +154,25 @@
         <div class="feat-row"><span>Neck tilt</span><strong id="featNeck">—</strong></div>
       </div>
 
-      <!-- Neck alarm indicator -->
-      <div id="neckAlarmBanner" class="neck-banner hidden">
-        Neck-tilt alarm — gật gù phát hiện
-      </div>
-
-      <!-- Eye-closure alarm indicator -->
-      <div id="eyeAlarmBanner" class="neck-banner eye-banner hidden">
-        Eye-closure alarm — mắt nhắm kéo dài phát hiện
+      <!-- Alarm panel for Banners -->
+      <div class="alarm-panel">
+        <div id="neckAlarmBanner" class="alarm-banner neck-banner hidden">
+          <span class="banner-icon">↕</span> Neck-tilt alarm — gật gù phát hiện
+        </div>
+        <div id="eyeAlarmBanner" class="alarm-banner eye-banner hidden">
+          <span class="banner-icon">👁</span> Eye-closure alarm — mắt nhắm kéo dài phát hiện
+        </div>
+        <div id="yawnAlarmBanner" class="alarm-banner yawn-banner hidden">
+          <span class="banner-icon">😮</span> Yawn detected — ngáp phát hiện
+        </div>
+        <div id="cameraObsBanner" class="alarm-banner obs-banner hidden">
+          <span class="banner-icon">⚠️</span> Camera bị che hoặc mất mặt
+        </div>
       </div>
 
       <!-- Timeline strip -->
       <h3 class="section-title" style="margin-top:1.25rem">Timeline</h3>
-      <div id="timeline" class="timeline"></div>
-
-    </section>
+      <div id="timeline" class="timeline"></div>    </section>
   </main>
 
   <footer class="footer">

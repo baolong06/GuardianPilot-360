@@ -26,8 +26,5 @@ jobs:
 
       - name: Run unit tests
         run: |
-          python -m pytest tests/ -q --tb=short \
-            --ignore=tests/test_eye_closure_rule.py \
-            --ignore=tests/test_perclos_integration.py
-        # Full suite (with mock keras) can be enabled when CI has enough deps:
-        # python -m pytest tests/ -q --tb=short
+          python -m pytest tests/ -q --tb=short
+

@@ -9,6 +9,10 @@ const btnInit          = document.getElementById('btnInit');
 const systemBadge      = document.getElementById('systemBadge');
 const statusBar        = document.getElementById('statusBar');
 
+const btnMute          = document.getElementById('btnMute');
+const btnHudMode       = document.getElementById('btnHudMode');
+const hudExitBtn       = document.getElementById('hudExitBtn');
+
 const tabButtons       = document.querySelectorAll('.tab');
 const tabContents      = document.querySelectorAll('.tab-content');
 
@@ -51,6 +55,9 @@ const mlpProb          = document.getElementById('mlpProb');
 const lstmProb         = document.getElementById('lstmProb');
 const emaProb          = document.getElementById('emaProb');
 
+const perclosBar       = document.getElementById('perclosBar');
+const perclosValue     = document.getElementById('perclosValue');
+
 const featEarLeft      = document.getElementById('featEarLeft');
 const featEarRight     = document.getElementById('featEarRight');
 const featEarAvg       = document.getElementById('featEarAvg');
@@ -62,7 +69,132 @@ const featNeck         = document.getElementById('featNeck');
 
 const neckBanner       = document.getElementById('neckAlarmBanner');
 const eyeBanner        = document.getElementById('eyeAlarmBanner');
+const yawnBanner       = document.getElementById('yawnAlarmBanner');
+const obsBanner        = document.getElementById('cameraObsBanner');
 const timeline         = document.getElementById('timeline');
+
+// ── Audio Alert Manager (Web Audio API - 4 Levels) ─────────────────────────
+class AudioAlertManager {
+  constructor() {
+    this.ctx = null;
+    this.muted = false;
+    this.currentLevel = 0;
+    this.loopTimer = null;
+  }
+
+  unlock() {
+    if (!this.ctx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) this.ctx = new AudioCtx();
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+  }
+
+  toggleMute() {
+    this.muted = !this.muted;
+    if (this.muted) {
+      this.stop();
+      if (btnMute) btnMute.textContent = '🔇';
+    } else {
+      if (btnMute) btnMute.textContent = '🔔';
+      this._playLevel(this.currentLevel);
+    }
+  }
+
+  setLevel(level) {
+    if (level === this.currentLevel) return;
+    this.currentLevel = level;
+    if (this.muted) return;
+    this._playLevel(level);
+  }
+
+  _beep(freq, durationMs, type = 'sine') {
+    if (!this.ctx || this.muted) return;
+    try {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+      gain.gain.setValueAtTime(0.15, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + (durationMs / 1000.0));
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start();
+      osc.stop(this.ctx.currentTime + (durationMs / 1000.0));
+    } catch (e) {
+      console.warn('[AudioAlert] Beep failed:', e);
+    }
+  }
+
+  _playLevel(level) {
+    this.stop();
+    if (level === 0 || this.muted) return;
+
+    if (level === 1) {
+      // Level 1 (FATIGUE): 1 beep nhẹ, 440Hz, 0.3s
+      this._beep(440, 300);
+    } else if (level === 2) {
+      // Level 2 (DROWSY): 2 beeps liên tiếp, 660Hz
+      this._beep(660, 200);
+      setTimeout(() => this._beep(660, 200), 250);
+    } else if (level === 3) {
+      // Level 3 (MICROSLEEP): 3 beeps nhanh, 880Hz
+      this._beep(880, 150);
+      setTimeout(() => this._beep(880, 150), 200);
+      setTimeout(() => this._beep(880, 150), 400);
+    } else if (level >= 4) {
+      // Level 4 (CRITICAL): Còi báo động lặp lại 1100Hz
+      const playLoop = () => {
+        if (this.currentLevel < 4 || this.muted) return;
+        this._beep(1100, 120, 'sawtooth');
+      };
+      playLoop();
+      this.loopTimer = setInterval(playLoop, 250);
+    }
+  }
+
+  stop() {
+    if (this.loopTimer) {
+      clearInterval(this.loopTimer);
+      this.loopTimer = null;
+    }
+  }
+}
+
+const audioAlerts = new AudioAlertManager();
+
+if (btnMute) {
+  btnMute.addEventListener('click', () => {
+    audioAlerts.unlock();
+    audioAlerts.toggleMute();
+  });
+}
+
+// ── HUD Mode Logic ────────────────────────────────────────────────────────
+const HUD_STORAGE_KEY = 'guardian_hud_mode';
+
+function toggleHudMode(enable) {
+  const isHud = enable !== undefined ? enable : !document.body.classList.contains('hud-mode');
+  if (isHud) {
+    document.body.classList.add('hud-mode');
+    if (hudExitBtn) hudExitBtn.classList.remove('hidden');
+    localStorage.setItem(HUD_STORAGE_KEY, '1');
+  } else {
+    document.body.classList.remove('hud-mode');
+    if (hudExitBtn) hudExitBtn.classList.add('hidden');
+    localStorage.setItem(HUD_STORAGE_KEY, '0');
+  }
+}
+
+if (btnHudMode) btnHudMode.addEventListener('click', () => toggleHudMode());
+if (hudExitBtn) hudExitBtn.addEventListener('click', () => toggleHudMode(false));
+
+// On load restore HUD preference
+if (localStorage.getItem(HUD_STORAGE_KEY) === '1') {
+  toggleHudMode(true);
+}
 
 // Bật debug logging cục bộ để chẩn đoán DROWSY-alarm-stuck
 const DEBUG_FUSION = true;   // đổi thành false khi đã ổn định
@@ -136,6 +268,7 @@ function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
 // ── Init ──────────────────────────────────────────────────────────────────
 btnInit.addEventListener('click', async () => {
+  audioAlerts.unlock();
   setBadge('loading', 'Đang khởi tạo…');
   setStatus('Đang load model (có thể mất 30-60s)…');
   btnInit.disabled = true;
@@ -172,6 +305,7 @@ videoFpsSlider.addEventListener('input', () => { videoFpsValue.textContent = vid
 
 // ── Webcam ────────────────────────────────────────────────────────────────
 btnStartCam.addEventListener('click', async () => {
+  audioAlerts.unlock();
   try {
     // Request high FPS from camera
     camStream = await navigator.mediaDevices.getUserMedia({
@@ -846,40 +980,81 @@ async function callAnalyze(dataUrl, resetState = false, annotate = false) {
 
 function applyResult(data) {
   const on = data.alarm_on;
+  const stateStr = (data.drowsiness_state || (on ? 'DROWSY' : 'NORMAL')).toUpperCase();
+  const stateLower = stateStr.toLowerCase();
+  const alertLvl = data.alert_level != null ? Number(data.alert_level) : (on ? 2 : 0);
 
+  // Trigger audio alert for level change
+  audioAlerts.setLevel(alertLvl);
+
+  // Update card data attributes for 5-state colors
   alertCard.dataset.alarm   = on ? 'on' : 'off';
+  alertCard.dataset.state   = stateLower;
   resultPanel.dataset.alarm = on ? 'on' : 'off';
-  alertLabel.textContent    = on ? 'DROWSY' : 'NORMAL';
+  resultPanel.dataset.state = stateLower;
+
+  alertLabel.textContent    = stateStr;
   alertProb.textContent     = 'p = ' + fmt(data.ema_prob);
   mlpProb.textContent       = data.p_mlp_drowsy  != null ? fmt(data.p_mlp_drowsy)  : '—';
   lstmProb.textContent      = data.p_lstm_drowsy != null ? fmt(data.p_lstm_drowsy) : '—';
   emaProb.textContent       = fmt(data.ema_prob);
 
-  overlayStatus.textContent = on ? 'DROWSY' : 'NORMAL';
+  overlayStatus.textContent = stateStr;
   overlayProb.textContent   = 'p=' + fmt(data.ema_prob);
-  overlayStatus.style.color = on ? '#e09090' : '#7ec494';
+  overlayStatus.style.color = (alertLvl >= 2) ? '#e09090' : (alertLvl === 1 ? '#e0c060' : '#7ec494');
 
-  if (data.neck_alarm) neckBanner.classList.remove('hidden');
-  else                 neckBanner.classList.add('hidden');
-
-  if (data.eye_alarm)  eyeBanner.classList.remove('hidden');
-  else                 eyeBanner.classList.add('hidden');
-
-// Debug: log every 10 frames to avoid spamming
-if (DEBUG_FUSION) {
-  window._dbgFrame = ((window._dbgFrame || 0) + 1);
-  if (window._dbgFrame % 10 === 0) {
-    console.log('[fusion]', {
-      alarm_on:   data.alarm_on,
-      ema_prob:   data.ema_prob,
-      p_mlp:      data.p_mlp_drowsy,
-      p_lstm:     data.p_lstm_drowsy,
-      neck_alarm: data.neck_alarm,
-      eye_alarm:  data.eye_alarm,
-      ear:        data.features?.ear_avg,
-    });
+  // PERCLOS Gauge Update
+  const perclosRatio = (data.perclos_ratio != null ? data.perclos_ratio : (data.perclos || 0));
+  const perclosPct   = Math.min(100, Math.max(0, perclosRatio * 100));
+  if (perclosBar && perclosValue) {
+    perclosValue.textContent = perclosPct.toFixed(1) + '%';
+    perclosBar.style.width   = perclosPct.toFixed(1) + '%';
+    if (perclosPct >= 70) {
+      perclosBar.style.background = 'var(--microsleep)';
+    } else if (perclosPct >= 50) {
+      perclosBar.style.background = 'var(--drowsy)';
+    } else if (perclosPct >= 30) {
+      perclosBar.style.background = 'var(--fatigue)';
+    } else {
+      perclosBar.style.background = 'var(--normal)';
+    }
   }
-}
+
+  // Banners
+  if (neckBanner) {
+    if (data.neck_alarm) neckBanner.classList.remove('hidden');
+    else                 neckBanner.classList.add('hidden');
+  }
+  if (eyeBanner) {
+    if (data.eye_alarm)  eyeBanner.classList.remove('hidden');
+    else                 eyeBanner.classList.add('hidden');
+  }
+  if (yawnBanner) {
+    if (data.yawn_alarm) yawnBanner.classList.remove('hidden');
+    else                 yawnBanner.classList.add('hidden');
+  }
+  if (obsBanner) {
+    if (data.camera_obstructed) obsBanner.classList.remove('hidden');
+    else                        obsBanner.classList.add('hidden');
+  }
+
+  // Debug: log every 10 frames to avoid spamming
+  if (DEBUG_FUSION) {
+    window._dbgFrame = ((window._dbgFrame || 0) + 1);
+    if (window._dbgFrame % 10 === 0) {
+      console.log('[fusion]', {
+        drowsiness_state: data.drowsiness_state,
+        alert_level:      data.alert_level,
+        alarm_on:         data.alarm_on,
+        ema_prob:         data.ema_prob,
+        perclos:          perclosRatio,
+        neck_alarm:       data.neck_alarm,
+        eye_alarm:        data.eye_alarm,
+        yawn_alarm:       data.yawn_alarm,
+        camera_obstructed:data.camera_obstructed,
+      });
+    }
+  }
 
   if (data.features) {
     const f = data.features;

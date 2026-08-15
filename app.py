@@ -444,6 +444,11 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/dashboard")
+def dashboard():
+    return render_template("dashboard.html")
+
+
 @app.route("/api/init", methods=["POST"])
 def api_init():
     """Load model + warm-up. Gọi 1 lần trước khi phân tích."""

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fleet Dashboard — GuardianPilot 360</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
+</head>
+<body>
+
+  <!-- Topbar -->
+  <header class="dashboard-header">
+    <div class="brand">
+      <svg class="brand-icon" width="28" height="28" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+        <circle cx="13" cy="13" r="11" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="13" cy="13" r="5" fill="currentColor" opacity="0.5"/>
+        <circle cx="13" cy="13" r="2" fill="currentColor"/>
+      </svg>
+      <div>
+        <h1>GuardianPilot360</h1>
+        <p>Quản Lý Đội Xe &amp; Giám Sát Cảnh Báo Từ Xa</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <button id="btnRefresh" class="btn btn-ghost">🔄 Làm mới</button>
+      <a href="/" class="btn btn-primary">📹 Live Monitor</a>
+    </div>
+  </header>
+
+  <div class="dashboard-container">
+
+    <!-- Overview Stats Cards -->
+    <section class="stats-overview">
+      <div class="stat-card">
+        <div class="stat-icon">🚗</div>
+        <div class="stat-content">
+          <span class="stat-title">Xe Đang Giám Sát</span>
+          <span id="statActiveVehicles" class="stat-value">1</span>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon">⚠️</div>
+        <div class="stat-content">
+          <span class="stat-title">Tổng Cảnh Báo</span>
+          <span id="statTotalAlerts" class="stat-value">0</span>
+        </div>
+      </div>
+
+      <div class="stat-card card-critical">
+        <div class="stat-icon">🚨</div>
+        <div class="stat-content">
+          <span class="stat-title">Sự Kiện CRITICAL</span>
+          <span id="statCriticalEvents" class="stat-value">0</span>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon">👁</div>
+        <div class="stat-content">
+          <span class="stat-title">PERCLOS Đỉnh</span>
+          <span id="statPeakPerclos" class="stat-value">0%</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Analytics Charts Section -->
+    <section class="charts-section">
+      <div class="chart-card">
+        <h3>Phân Bố Cảnh Báo Theo Giờ</h3>
+        <div class="canvas-wrap">
+          <canvas id="chartHourly" width="500" height="200"></canvas>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>Phân Bố Mức Độ Cảnh Báo</h3>
+        <div class="canvas-wrap">
+          <canvas id="chartDistribution" width="300" height="200"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Event Log Table Section -->
+    <section class="events-section">
+      <div class="section-header">
+        <h2>Lịch Sử Sự Kiện Cảnh Báo (Event Log)</h2>
+        <div class="filter-bar">
+          <input type="text" id="filterDriver" placeholder="Lọc theo Driver ID..." />
+          <input type="date" id="filterDate" />
+          <select id="filterState">
+            <option value="">-- Tất cả trạng thái --</option>
+            <option value="FATIGUE">FATIGUE (Cấp 1)</option>
+            <option value="DROWSY">DROWSY (Cấp 2)</option>
+            <option value="MICROSLEEP">MICROSLEEP (Cấp 3)</option>
+            <option value="CRITICAL">CRITICAL (Cấp 4)</option>
+          </select>
+          <button id="btnFilter" class="btn btn-accent">Lọc</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="events-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Thời Gian (NTP)</th>
+              <th>Xe ID</th>
+              <th>Tài Xế</th>
+              <th>Trạng Thái</th>
+              <th>PERCLOS</th>
+              <th>EAR Avg</th>
+              <th>Neck Tilt</th>
+              <th>GPS</th>
+              <th>Thao Tác</th>
+            </tr>
+          </thead>
+          <tbody id="eventsTbody">
+            <tr>
+              <td colspan="10" class="empty-msg">Đang nạp danh sách sự kiện...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Event Detail Modal -->
+  <div id="eventModal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="modalTitle">Chi Tiết Sự Kiện #—</h3>
+        <button id="btnModalClose" class="close-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="snapshot-view">
+          <div id="snapshotPlaceholder" class="snapshot-placeholder">
+            <span>📷 Mode Bảo Mật (Metadata Only)<br>Không lưu ảnh khuôn mặt</span>
+          </div>
+          <img id="modalSnapshotImg" class="snapshot-img hidden" alt="Event Snapshot" />
+        </div>
+        <div class="modal-info-grid" id="modalInfoGrid">
+          <!-- Dynamic details -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <span>GuardianPilot 360 · Fleet Management &amp; Safety Dashboard</span>
+    <span id="syncStatus">Tự động cập nhật mỗi 10s</span>
+  </footer>
+
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

@@ -54,6 +54,7 @@ def test_load_drowsiness_bundle_weights_mode():
 
 
 def test_build_architectures_output_shape():
+    pytest.importorskip("keras")
     mlp = build_mlp_model()
     lstm = build_lstm_model()
     assert mlp.output_shape == (None, 1)
