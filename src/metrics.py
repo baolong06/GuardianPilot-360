@@ -167,10 +167,10 @@ class InferenceWatchdog:
                 with self._lock:
                     self._last_reload_ts = now
                     self._reload_count += 1
-                    if self._reload_count > self.max_reload_attempts:
+                    if self._reload_count >= self.max_reload_attempts:
                         self._reload_disabled = True
                         logger.error(
-                            "Watchdog: max reload attempts (%d) exceeded — "
+                            "Watchdog: max reload attempts (%d) reached — "
                             "disabling on_stale until next heartbeat",
                             self.max_reload_attempts,
                         )
