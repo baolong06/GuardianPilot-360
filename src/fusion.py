@@ -71,7 +71,9 @@ class FusionState:
         self.time_above_on_ms: float        = 0.0
         self.time_below_off_ms:float        = 0.0
         # Eye-closure rule state
-        self.ear_smooth:            float | None = None   # low-pass ear_avg
+        self.ear_left_smooth:   float | None = None   # low-pass ear_left
+        self.ear_right_smooth:  float | None = None   # low-pass ear_right
+        self.ear_avg_smooth:    float | None = None   # low-pass ear_avg (dùng cho rules downstream)
         self.eye_closed_streak_ms:  float        = 0.0    # thời gian mắt liên tục nhắm
         # Escape-valve: mắt mở rõ ràng liên tục (tránh alarm stuck-on)
         self.eyes_open_streak_ms:   float        = 0.0
@@ -123,23 +125,47 @@ class FusionState:
         if self.last_ts_ms is not None:
             dt_ms = max(0.0, timestamp_ms - self.last_ts_ms)
 
-        # ── EAR low-pass filter (giảm nhiễu trước khi feed model + rule) ──
-        raw_ear = feat.get("ear_avg", float("nan"))
-        if math.isnan(raw_ear):
-            ear_smooth = self.ear_smooth  # giữ giá trị cũ nếu frame hiện tại thiếu
-        else:
-            if self.ear_smooth is None:
-                ear_smooth = raw_ear
-            else:
-                ear_smooth = EAR_LPF_ALPHA * raw_ear + (1 - EAR_LPF_ALPHA) * self.ear_smooth
-        self.ear_smooth = ear_smooth
+        # ── Per-eye EAR low-pass filter (giảm nhiễu trước khi feed model + rule) ──
+        # Smooth từng eye riêng — không ghi đè ear_left/ear_right bằng ear_avg smoothed
+        raw_ear_left  = feat.get("ear_left",  float("nan"))
+        raw_ear_right = feat.get("ear_right", float("nan"))
+        raw_ear_avg   = feat.get("ear_avg",   float("nan"))
 
-        # Ghi đè giá trị EAR đã được low-pass vào feat để MLP/LSTM nhận tín hiệu ổn định
+        if math.isnan(raw_ear_left):
+            ear_left_smooth = self.ear_left_smooth
+        else:
+            if self.ear_left_smooth is None:
+                ear_left_smooth = raw_ear_left
+            else:
+                ear_left_smooth = EAR_LPF_ALPHA * raw_ear_left + (1 - EAR_LPF_ALPHA) * self.ear_left_smooth
+        self.ear_left_smooth = ear_left_smooth
+
+        if math.isnan(raw_ear_right):
+            ear_right_smooth = self.ear_right_smooth
+        else:
+            if self.ear_right_smooth is None:
+                ear_right_smooth = raw_ear_right
+            else:
+                ear_right_smooth = EAR_LPF_ALPHA * raw_ear_right + (1 - EAR_LPF_ALPHA) * self.ear_right_smooth
+        self.ear_right_smooth = ear_right_smooth
+
+        if math.isnan(raw_ear_avg):
+            ear_avg_smooth = self.ear_avg_smooth
+        else:
+            if self.ear_avg_smooth is None:
+                ear_avg_smooth = raw_ear_avg
+            else:
+                ear_avg_smooth = EAR_LPF_ALPHA * raw_ear_avg + (1 - EAR_LPF_ALPHA) * self.ear_avg_smooth
+        self.ear_avg_smooth = ear_avg_smooth
+
+        # Ghi đè từng feature đã được low-pass vào feat để MLP nhận tín hiệu ổn định
         feat = dict(feat)
-        if ear_smooth is not None:
-            feat["ear_left"]  = ear_smooth
-            feat["ear_right"] = ear_smooth
-            feat["ear_avg"]   = ear_smooth
+        if ear_left_smooth  is not None: feat["ear_left"]  = ear_left_smooth
+        if ear_right_smooth is not None: feat["ear_right"] = ear_right_smooth
+        if ear_avg_smooth   is not None: feat["ear_avg"]   = ear_avg_smooth
+
+        # Dùng ear_avg_smooth cho các rule downstream (PERCLOS, eye-alarm, escape-valve)
+        ear_smooth = ear_avg_smooth
 
         # ── PERCLOS Tracker (L1 - new) ────────────────────────────────────
         perclos_ratio = 0.0
@@ -196,12 +222,15 @@ class FusionState:
         if use_pitch_nod and not math.isnan(pitch):
             if self.pitch_baseline is None:
                 self.pitch_baseline = pitch
+                pitch_delta = 0.0
             elif not self.alarm_on:
                 self.pitch_baseline = (
                     (1 - PITCH_BASELINE_ALPHA) * self.pitch_baseline
                     + PITCH_BASELINE_ALPHA * pitch
                 )
-            pitch_delta = abs(pitch - self.pitch_baseline)
+                pitch_delta = abs(pitch - self.pitch_baseline)
+            else:
+                pitch_delta = abs(pitch - self.pitch_baseline) if self.pitch_baseline is not None else 0.0
             self.pitch_peak_buffer.append(pitch_delta)
             peak_pitch = max(self.pitch_peak_buffer) if self.pitch_peak_buffer else 0.0
             if peak_pitch > PITCH_NOD_PEAK_DEG and pitch_delta > PITCH_NOD_CURRENT_DEG:
@@ -252,30 +281,31 @@ class FusionState:
         )
 
         if self.yawn_state == "IDLE":
+            yawn_alarm = False  # ensure clean slate on re-entry
             if is_yawn_posture:
                 self.yawn_state = "OPENING"
                 self.yawn_open_started_ms = timestamp_ms
 
         elif self.yawn_state == "OPENING":
+            yawn_alarm = False
             if is_yawn_posture:
-                # MAR+aspect vẫn cao — kiểm tra đủ duration chưa
                 if self.yawn_open_started_ms is not None:
                     elapsed = timestamp_ms - self.yawn_open_started_ms
                     if elapsed >= YAWN_DURATION_MIN_SEC * 1000:
                         self.yawn_state = "CONFIRMED"
-                        yawn_alarm = True
+                        yawn_alarm = True  # fire ONCE at transition
             else:
-                # MAR xuống trước duration → chỉ là nói/cười/nháy mắt
                 self.yawn_state = "IDLE"
                 self.yawn_open_started_ms = None
 
         elif self.yawn_state == "CONFIRMED":
-            # Chờ MAR xuống < 0.30 (miệng đóng) rồi mới vào cooldown
+            yawn_alarm = False  # already fired on transition; suppress while waiting
             if not math.isnan(mar) and mar < 0.30:
                 self.yawn_state = "COOLDOWN"
                 self.yawn_last_trigger_ms = timestamp_ms
 
         elif self.yawn_state == "COOLDOWN":
+            yawn_alarm = False
             if (timestamp_ms - self.yawn_last_trigger_ms) >= YAWN_COOLDOWN_SEC * 1000:
                 self.yawn_state = "IDLE"
 
