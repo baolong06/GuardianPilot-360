@@ -27,6 +27,17 @@ python app.py --port 5000
 
 Mở trình duyệt: http://127.0.0.1:5000
 
+### Phân tích video và tải kết quả
+
+1. Nhấn **Khởi tạo** để load MediaPipe + MLP + LSTM.
+2. Chọn tab **Video**, kéo thả hoặc chọn file MP4/WebM/MOV.
+3. Chọn FPS phân tích (mặc định 5 FPS), sau đó nhấn **Phân tích video**.
+4. Video gốc và frame nhận diện được hiển thị cạnh nhau trong lúc xử lý.
+5. Khi hoàn tất, nhấn **Tải xuống MP4**. Server đồng thời lưu file tại `output/`.
+
+Video kết quả hiện không giữ âm thanh gốc. Khi chạy Docker Compose, `output/`
+được mount ra máy host nên file vẫn còn sau khi container dừng.
+
 ## Model artifacts & Docker
 
 Chạy convert **một lần** trước khi deploy Docker (full ML mode):

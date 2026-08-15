@@ -12,4 +12,5 @@ services:
       - ./data:/app/data
       - ./models:/app/models:ro
       - ./results:/app/results:ro
+      - ./output:/app/output
     restart: unless-stopped

@@ -18,6 +18,7 @@ results/*.task
 *.avi
 *.mov
 *.mkv
+output/
 
 # Notebooks and temporary outputs
 results/*.ipynb

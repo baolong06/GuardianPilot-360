@@ -14,7 +14,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 
 # Đảm bảo import được src/
 BASE_DIR = Path(__file__).parent
@@ -38,6 +38,7 @@ from src.phone_distraction import (
 from src import thresholds as threshold_store
 from src.model_loader import load_drowsiness_bundle
 from src.runtime_profile import apply_process_limits, get_runtime_profile
+from src.video_output import VideoOutputError, VideoOutputStore
 
 apply_process_limits()
 
@@ -50,6 +51,8 @@ app = Flask(
     template_folder=str(BASE_DIR / "web" / "templates"),
     static_folder=str(BASE_DIR / "web" / "static"),
 )
+
+_video_outputs = VideoOutputStore(BASE_DIR / "output")
 
 # ── State ────────────────────────────────────────────────────────────────────
 _lock         = threading.Lock()
@@ -136,12 +139,15 @@ def _post_fusion(fused: dict, phone: dict, ts_ms: float, face_ok: bool) -> dict:
 
 
 def _session_reset():
+    global _inference_fps, _last_infer_ts
     _fusion.reset()
     _alert_mgr.reset()
     _camera_obs.reset()
     _driving_ctx.reset()
     _trip_memory.reset()
     _phone_det.reset()
+    _inference_fps = 0.0
+    _last_infer_ts = None
     _apply_runtime_thresholds()
 
 
@@ -504,6 +510,54 @@ def api_status():
     })
 
 
+@app.route("/api/video-output/start", methods=["POST"])
+def api_video_output_start():
+    """Create an MP4 writer for a browser-driven video analysis session."""
+    if not _initialized:
+        return jsonify({"ok": False, "error": "Hệ thống chưa khởi tạo."}), 400
+
+    body = request.get_json(silent=True) or {}
+    try:
+        info = _video_outputs.start(
+            original_name=str(body.get("filename") or "video"),
+            width=int(body.get("width", 0)),
+            height=int(body.get("height", 0)),
+            fps=float(body.get("fps", 0)),
+        )
+    except (TypeError, ValueError, VideoOutputError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, **info})
+
+
+@app.route("/api/video-output/<output_id>/finish", methods=["POST"])
+def api_video_output_finish(output_id: str):
+    """Finalize an output file so it can be downloaded or played."""
+    try:
+        info = _video_outputs.finish(output_id)
+    except VideoOutputError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+
+    if info["download_ready"]:
+        info["download_url"] = f"/api/video-output/{output_id}/download"
+    return jsonify({"ok": True, **info})
+
+
+@app.route("/api/video-output/<output_id>/download")
+def api_video_output_download(output_id: str):
+    """Download a completed annotated video without exposing server paths."""
+    try:
+        path, filename = _video_outputs.get_download(output_id)
+    except VideoOutputError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    return send_file(
+        path,
+        mimetype="video/mp4",
+        as_attachment=True,
+        download_name=filename,
+        conditional=True,
+    )
+
+
 @app.route("/api/analyze", methods=["POST"])
 def api_analyze():
     """Nhận 1 frame base64 → trả về kết quả fusion (+ annotated frame nếu annotate=true)."""
@@ -517,6 +571,16 @@ def api_analyze():
 
     reset_state = body.get("reset_state", False)
     annotate    = body.get("annotate", False)
+    output_id   = str(body.get("output_id") or "").strip() or None
+
+    source_timestamp_ms = body.get("source_timestamp_ms")
+    if source_timestamp_ms is not None:
+        try:
+            source_timestamp_ms = float(source_timestamp_ms)
+            if not np.isfinite(source_timestamp_ms) or source_timestamp_ms < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "source_timestamp_ms không hợp lệ."}), 400
 
     try:
         frame = _decode_image(img_data)
@@ -528,7 +592,9 @@ def api_analyze():
             _session_reset()
 
         h, w = frame.shape[:2]
-        ts_ms = time.time() * 1000.0
+        # Uploaded video must use its media timeline. Using server wall-clock time
+        # would make duration-based rules depend on inference speed.
+        ts_ms = source_timestamp_ms if source_timestamp_ms is not None else time.time() * 1000.0
 
         try:
             result = run_holistic(frame, str(_holistic_task_path))
@@ -576,8 +642,13 @@ def api_analyze():
                     "eyes_open_streak_ms": round(_fusion.eyes_open_streak_ms, 1),
                     "eye_closed_streak_ms": round(_fusion.eye_closed_streak_ms, 1),
                 }
-                resp["annotated_frame"] = _encode_frame(
-                    _annotate_frame(frame, result, None, fused_stub))
+                annotated = _annotate_frame(frame, result, None, fused_stub)
+                if output_id:
+                    try:
+                        resp["output_frame_count"] = _video_outputs.append(output_id, annotated)
+                    except VideoOutputError as exc:
+                        return jsonify({"ok": False, "error": str(exc)}), 400
+                resp["annotated_frame"] = _encode_frame(annotated)
             return jsonify(resp)
 
         fused = _fusion.update(
@@ -604,8 +675,13 @@ def api_analyze():
             **fused,
         }
         if annotate:
-            resp["annotated_frame"] = _encode_frame(
-                _annotate_frame(frame, result, feat, fused))
+            annotated = _annotate_frame(frame, result, feat, fused)
+            if output_id:
+                try:
+                    resp["output_frame_count"] = _video_outputs.append(output_id, annotated)
+                except VideoOutputError as exc:
+                    return jsonify({"ok": False, "error": str(exc)}), 400
+            resp["annotated_frame"] = _encode_frame(annotated)
         return jsonify(resp)
 
 
@@ -803,8 +879,6 @@ def api_events():
 @app.route("/api/events/<int:event_id>/snapshot")
 def api_event_snapshot(event_id: int):
     """Trả ảnh snapshot — chỉ có khi DEBUG SAVE_FACE_SNAPSHOTS=true."""
-    from flask import send_file
-
     if not _event_logger.save_face_snapshots:
         return jsonify({
             "ok": False,

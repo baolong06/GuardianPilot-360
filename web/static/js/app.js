@@ -35,9 +35,14 @@ const btnAnalyzeUpload = document.getElementById('btnAnalyzeUpload');
 const videoDropZone    = document.getElementById('videoDropZone');
 const videoInput       = document.getElementById('videoInput');
 const btnPickVideo     = document.getElementById('btnPickVideo');
+const videoFileMeta    = document.getElementById('videoFileMeta');
 const videoFileName    = document.getElementById('videoFileName');
+const videoFileInfo    = document.getElementById('videoFileInfo');
+const videoWorkspace   = document.getElementById('videoWorkspace');
 const fileVideo        = document.getElementById('fileVideo');
 const videoAnnotatedPreview = document.getElementById('videoAnnotatedPreview');
+const videoResultPlaceholder = document.getElementById('videoResultPlaceholder');
+const videoLiveBadge   = document.getElementById('videoLiveBadge');
 const btnAnalyzeVideo  = document.getElementById('btnAnalyzeVideo');
 const btnStopVideo     = document.getElementById('btnStopVideo');
 const videoFpsSlider   = document.getElementById('videoFpsSlider');
@@ -45,7 +50,14 @@ const videoFpsValue    = document.getElementById('videoFpsValue');
 const videoProgressWrap= document.getElementById('videoProgressWrap');
 const videoProgressBar = document.getElementById('videoProgressBar');
 const videoProgressText= document.getElementById('videoProgressText');
+const videoProcessingMeta = document.getElementById('videoProcessingMeta');
+const videoFrameCount  = document.getElementById('videoFrameCount');
+const videoElapsed     = document.getElementById('videoElapsed');
+const videoProcessingState = document.getElementById('videoProcessingState');
 const videoTimeline    = document.getElementById('videoTimeline');
+const videoDownloadPanel = document.getElementById('videoDownloadPanel');
+const videoOutputName  = document.getElementById('videoOutputName');
+const btnDownloadVideo = document.getElementById('btnDownloadVideo');
 
 const resultPanel      = document.getElementById('resultPanel');
 const alertCard        = document.getElementById('alertCard');
@@ -210,6 +222,9 @@ let initialized  = false;
 let camStream    = null;
 let videoRunning = false;
 let videoAbort   = false;
+let selectedVideoFile = null;
+let selectedVideoUrl  = null;
+let activeVideoOutputId = null;
 
 // ── Runtime profile (dev vs automotive edge) ─────────────────────────────
 let runtimeProfile = {
@@ -288,6 +303,7 @@ btnInit.addEventListener('click', async () => {
       }
       btnAnalyzeLive.disabled   = camStream === null;
       btnAnalyzeUpload.disabled = previewImg.classList.contains('hidden');
+      btnAnalyzeVideo.disabled  = !selectedVideoFile;
     } else {
       setBadge('error', 'Lỗi');
       setStatus('Lỗi: ' + data.error);
@@ -861,92 +877,279 @@ btnAnalyzeUpload.addEventListener('click', async () => {
 
 // ── Upload video ──────────────────────────────────────────────────────────
 btnPickVideo.addEventListener('click', () => videoInput.click());
-videoInput.addEventListener('change', () => {
-  const file = videoInput.files[0];
-  if (!file) return;
-  fileVideo.src = URL.createObjectURL(file);
-  fileVideo.classList.remove('hidden');
-  videoFileName.textContent = file.name;
-  videoFileName.classList.remove('hidden');
-  btnAnalyzeVideo.disabled = !initialized;
+videoInput.addEventListener('change', () => loadVideoFile(videoInput.files[0]));
+videoDropZone.addEventListener('dragover', event => {
+  event.preventDefault();
+  videoDropZone.classList.add('dragover');
+});
+videoDropZone.addEventListener('dragleave', () => videoDropZone.classList.remove('dragover'));
+videoDropZone.addEventListener('drop', event => {
+  event.preventDefault();
+  videoDropZone.classList.remove('dragover');
+  loadVideoFile(event.dataTransfer.files[0]);
 });
 
-btnAnalyzeVideo.addEventListener('click', () => {
-  if (videoRunning) return;
-  videoRunning = true;
-  videoAbort   = false;
+function loadVideoFile(file) {
+  if (!file || videoRunning) return;
+  const supported = file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v|avi|mkv)$/i.test(file.name);
+  if (!supported) {
+    setStatus('File không hợp lệ. Vui lòng chọn một file video.');
+    return;
+  }
+
+  if (selectedVideoUrl) URL.revokeObjectURL(selectedVideoUrl);
+  selectedVideoFile = file;
+  selectedVideoUrl = URL.createObjectURL(file);
+
+  videoFileName.textContent = file.name;
+  videoFileInfo.textContent = `${formatBytes(file.size)} · Đang đọc thông tin…`;
+  videoFileMeta.classList.remove('hidden');
+  videoWorkspace.classList.remove('hidden');
+  videoAnnotatedPreview.classList.add('hidden');
+  videoResultPlaceholder.classList.remove('hidden');
+  videoDownloadPanel.classList.add('hidden');
+  videoProcessingMeta.classList.add('hidden');
+  videoProgressWrap.classList.add('hidden');
+  videoLiveBadge.textContent = 'CHỜ';
+  videoLiveBadge.dataset.state = 'idle';
   btnAnalyzeVideo.disabled = true;
-  btnStopVideo.disabled    = false;
+
+  fileVideo.onloadedmetadata = () => {
+    const duration = Number.isFinite(fileVideo.duration) ? fileVideo.duration : 0;
+    videoFileInfo.textContent = `${formatBytes(file.size)} · ${fileVideo.videoWidth}×${fileVideo.videoHeight} · ${formatTime(duration)}`;
+    btnAnalyzeVideo.disabled = !initialized;
+    setStatus(initialized ? 'Video đã sẵn sàng để phân tích.' : 'Hãy khởi tạo model trước khi phân tích.');
+  };
+  fileVideo.onerror = () => {
+    btnAnalyzeVideo.disabled = true;
+    setStatus('Trình duyệt không đọc được video này. Hãy thử MP4 hoặc WebM.');
+  };
+  fileVideo.src = selectedVideoUrl;
+  fileVideo.load();
+}
+
+btnAnalyzeVideo.addEventListener('click', async () => {
+  if (videoRunning || !initialized || !selectedVideoFile) return;
+  if (!Number.isFinite(fileVideo.duration) || fileVideo.duration <= 0) {
+    setStatus('Không đọc được thời lượng video.');
+    return;
+  }
+
+  const fps = parseInt(videoFpsSlider.value, 10);
+  const dimensions = getVideoAnalysisDimensions();
+  try {
+    const output = await startVideoOutput(dimensions.width, dimensions.height, fps);
+    activeVideoOutputId = output.output_id;
+  } catch (error) {
+    setStatus('Không tạo được video output: ' + error.message);
+    return;
+  }
+
+  videoRunning = true;
+  videoAbort = false;
+  fileVideo.pause();
+  fileVideo.controls = false;
+  btnAnalyzeVideo.disabled = true;
+  btnStopVideo.disabled = false;
+  videoFpsSlider.disabled = true;
   videoProgressWrap.classList.remove('hidden');
-  videoTimeline.innerHTML  = '';
-  fileVideo.classList.add('hidden');
+  videoProcessingMeta.classList.remove('hidden');
+  videoDownloadPanel.classList.add('hidden');
+  videoTimeline.innerHTML = '';
   videoAnnotatedPreview.classList.remove('hidden');
-  runVideoAnalysis();
+  videoResultPlaceholder.classList.add('hidden');
+  videoLiveBadge.textContent = 'LIVE';
+  videoLiveBadge.dataset.state = 'running';
+  videoProgressBar.style.width = '0%';
+  videoProgressText.textContent = '0%';
+  setStatus('Model đang phân tích trực tiếp từng khung hình…');
+
+  await runVideoAnalysis(dimensions.width, dimensions.height, fps);
 });
 
 btnStopVideo.addEventListener('click', () => {
+  if (!videoRunning) return;
   videoAbort = true;
-  videoRunning = false;
-  btnAnalyzeVideo.disabled = !initialized;
-  btnStopVideo.disabled    = true;
-  videoAnnotatedPreview.classList.add('hidden');
-  fileVideo.classList.remove('hidden');
-  setStatus('Đã dừng phân tích video.');
+  btnStopVideo.disabled = true;
+  videoProcessingState.textContent = 'Đang đóng file output…';
+  setStatus('Đang dừng an toàn và hoàn tất video đã xử lý…');
 });
 
-async function runVideoAnalysis() {
-  const fps = parseInt(videoFpsSlider.value, 10);
-  const interval = 1.0 / fps;
-  const duration = fileVideo.duration || 0;
-  let t = 0;
+window.addEventListener('pagehide', () => {
+  if (activeVideoOutputId) {
+    navigator.sendBeacon(
+      `/api/video-output/${encodeURIComponent(activeVideoOutputId)}/finish`,
+      new Blob([], { type: 'application/octet-stream' }),
+    );
+  }
+  if (selectedVideoUrl) URL.revokeObjectURL(selectedVideoUrl);
+});
 
-  await fetch('/api/reset', { method: 'POST' });
+async function runVideoAnalysis(width, height, fps) {
+  const duration = fileVideo.duration;
+  const totalFrames = Math.max(1, Math.ceil(duration * fps));
+  let processedFrames = 0;
+  let processingError = null;
+
+  videoFrameCount.textContent = `0 / ${totalFrames} frame`;
+  videoElapsed.textContent = `00:00 / ${formatTime(duration)}`;
+  videoProcessingState.textContent = 'Đang khởi tạo pipeline…';
+
+  const resetResponse = await fetch('/api/reset', { method: 'POST' });
+  if (!resetResponse.ok) {
+    processingError = new Error('Không reset được trạng thái nhận diện.');
+  }
 
   const snapCanvas = document.createElement('canvas');
-  snapCanvas.width  = 640;
-  snapCanvas.height = 480;
-  const ctx = snapCanvas.getContext('2d');
+  snapCanvas.width = width;
+  snapCanvas.height = height;
+  const ctx = snapCanvas.getContext('2d', { alpha: false });
 
-  while (!videoAbort && t <= duration) {
-    fileVideo.currentTime = t;
-    await new Promise(r => { fileVideo.onseeked = r; });
-    ctx.drawImage(fileVideo, 0, 0, snapCanvas.width, snapCanvas.height);
-    const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.82);
+  try {
+    for (let frameIndex = 0; frameIndex < totalFrames && !videoAbort; frameIndex += 1) {
+      if (processingError) throw processingError;
+      const mediaTime = Math.min(frameIndex / fps, Math.max(0, duration - 0.001));
+      await seekVideo(fileVideo, mediaTime);
+      ctx.drawImage(fileVideo, 0, 0, width, height);
+      const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.86);
 
-    const t0 = performance.now();
-    const result = await callAnalyze(dataUrl, false, true);
-    const lat = Math.round(performance.now() - t0);
+      const startedAt = performance.now();
+      const result = await callAnalyze(dataUrl, false, true, {
+        outputId: activeVideoOutputId,
+        sourceTimestampMs: mediaTime * 1000,
+      });
+      if (!result) throw new Error('Server không trả về kết quả nhận diện.');
 
-    if (result) {
+      processedFrames += 1;
       applyResult(result);
       addTimelineSegment(result.alarm_on);
-      latencyInfo.textContent = lat + ' ms';
-      if (result.annotated_frame) {
-        const img = new Image();
-        img.onload = () => {
-          videoAnnotatedPreview.width  = img.naturalWidth;
-          videoAnnotatedPreview.height = img.naturalHeight;
-          videoAnnotatedPreview.getContext('2d').drawImage(img, 0, 0);
-        };
-        img.src = result.annotated_frame;
-      }
+      addVideoTimelineSegment(result.alarm_on);
+      latencyInfo.textContent = Math.round(performance.now() - startedAt) + ' ms';
+      if (result.annotated_frame) await drawVideoAnnotatedFrame(result.annotated_frame);
+
+      const pct = Math.min(100, (processedFrames / totalFrames) * 100);
+      videoProgressBar.style.width = pct + '%';
+      videoProgressText.textContent = Math.round(pct) + '%';
+      videoFrameCount.textContent = `${processedFrames} / ${totalFrames} frame`;
+      videoElapsed.textContent = `${formatTime(mediaTime)} / ${formatTime(duration)}`;
+      videoProcessingState.textContent = result.face_found ? 'Đã phát hiện khuôn mặt' : 'Không thấy khuôn mặt';
+
+      // Yield to the browser so the progress UI is painted between inferences.
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
+  } catch (error) {
+    processingError = error;
+  }
 
-    const pct = duration > 0 ? Math.min(100, (t / duration) * 100) : 0;
-    videoProgressBar.style.width = pct + '%';
-    videoProgressText.textContent = Math.round(pct) + '%';
-
-    t += interval;
-    await new Promise(r => setTimeout(r, 0));
+  const wasStopped = videoAbort;
+  let output = null;
+  try {
+    output = await finishVideoOutput(activeVideoOutputId);
+  } catch (error) {
+    processingError = processingError || error;
   }
 
   videoRunning = false;
-  videoAbort   = false;
-  btnAnalyzeVideo.disabled = !initialized;
-  btnStopVideo.disabled    = true;
-  videoProgressBar.style.width = '100%';
-  videoProgressText.textContent = '100%';
-  setStatus('Phân tích video hoàn tất.');
+  videoAbort = false;
+  activeVideoOutputId = null;
+  btnAnalyzeVideo.disabled = !initialized || !selectedVideoFile;
+  btnStopVideo.disabled = true;
+  videoFpsSlider.disabled = false;
+  fileVideo.controls = true;
+
+  if (output && output.download_ready) {
+    btnDownloadVideo.href = output.download_url;
+    btnDownloadVideo.download = output.filename;
+    videoOutputName.textContent = `output/${output.filename}`;
+    videoDownloadPanel.classList.remove('hidden');
+  }
+
+  if (processingError) {
+    videoLiveBadge.textContent = 'LỖI';
+    videoLiveBadge.dataset.state = 'error';
+    videoProcessingState.textContent = 'Phân tích gặp lỗi';
+    setStatus(`Lỗi phân tích video: ${processingError.message}`);
+  } else if (wasStopped) {
+    videoLiveBadge.textContent = 'ĐÃ DỪNG';
+    videoLiveBadge.dataset.state = 'done';
+    videoProcessingState.textContent = `Đã lưu ${processedFrames} frame`;
+    setStatus('Đã dừng. Phần video đã phân tích vẫn có thể tải xuống.');
+  } else {
+    videoLiveBadge.textContent = 'HOÀN TẤT';
+    videoLiveBadge.dataset.state = 'done';
+    videoProcessingState.textContent = `Hoàn tất ${processedFrames} frame`;
+    videoProgressBar.style.width = '100%';
+    videoProgressText.textContent = '100%';
+    setStatus('Phân tích hoàn tất. Video đã được lưu trong thư mục output.');
+  }
+}
+
+function getVideoAnalysisDimensions() {
+  const sourceWidth = fileVideo.videoWidth || 640;
+  const sourceHeight = fileVideo.videoHeight || 480;
+  const scale = Math.min(1, 960 / sourceWidth, 720 / sourceHeight);
+  let width = Math.max(16, Math.round(sourceWidth * scale));
+  let height = Math.max(16, Math.round(sourceHeight * scale));
+  width -= width % 2;
+  height -= height % 2;
+  return { width, height };
+}
+
+async function startVideoOutput(width, height, fps) {
+  const response = await fetch('/api/video-output/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename: selectedVideoFile.name, width, height, fps }),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.error || 'Không tạo được phiên output.');
+  return data;
+}
+
+async function finishVideoOutput(outputId) {
+  if (!outputId) return null;
+  const response = await fetch(`/api/video-output/${encodeURIComponent(outputId)}/finish`, {
+    method: 'POST',
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.error || 'Không đóng được video output.');
+  return data;
+}
+
+function seekVideo(video, timeSec) {
+  if (Math.abs(video.currentTime - timeSec) < 0.001 && video.readyState >= 2) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Hết thời gian chờ giải mã frame video.'));
+    }, 8000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('error', onError);
+    };
+    const onSeeked = () => { cleanup(); resolve(); };
+    const onError = () => { cleanup(); reject(new Error('Không giải mã được frame video.')); };
+    video.addEventListener('seeked', onSeeked, { once: true });
+    video.addEventListener('error', onError, { once: true });
+    video.currentTime = timeSec;
+  });
+}
+
+function drawVideoAnnotatedFrame(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      videoAnnotatedPreview.width = img.naturalWidth;
+      videoAnnotatedPreview.height = img.naturalHeight;
+      videoAnnotatedPreview.getContext('2d').drawImage(img, 0, 0);
+      resolve();
+    };
+    img.onerror = () => reject(new Error('Không hiển thị được frame kết quả.'));
+    img.src = dataUrl;
+  });
 }
 
 // ── One-shot image analyze (upload tab) ──────────────────────────────────
@@ -962,12 +1165,18 @@ async function analyzeFrameOnce(dataUrl, resetState = false) {
   }
 }
 
-async function callAnalyze(dataUrl, resetState = false, annotate = false) {
+async function callAnalyze(dataUrl, resetState = false, annotate = false, options = {}) {
   try {
     const res = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: dataUrl, reset_state: resetState, annotate }),
+      body: JSON.stringify({
+        image: dataUrl,
+        reset_state: resetState,
+        annotate,
+        output_id: options.outputId || undefined,
+        source_timestamp_ms: options.sourceTimestampMs,
+      }),
     });
     const data = await res.json();
     if (!data.ok) { setStatus('Lỗi: ' + data.error); return null; }
@@ -1093,6 +1302,31 @@ function addTimelineSegment(alarmOn) {
   timeline.appendChild(seg);
   timeline.scrollLeft = timeline.scrollWidth;
   while (timeline.children.length > 300) timeline.removeChild(timeline.firstChild);
+}
+
+function addVideoTimelineSegment(alarmOn) {
+  const seg = document.createElement('div');
+  seg.className = 'tl-seg';
+  seg.dataset.alarm = alarmOn ? 'on' : 'off';
+  videoTimeline.appendChild(seg);
+  while (videoTimeline.children.length > 300) {
+    videoTimeline.removeChild(videoTimeline.firstChild);
+  }
+}
+
+function formatTime(seconds) {
+  const value = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+  const mins = Math.floor(value / 60);
+  const secs = value % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const value = bytes / (1024 ** index);
+  return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
 function setBadge(type, text) {

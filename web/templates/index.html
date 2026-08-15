@@ -92,25 +92,68 @@
       <div id="tabVideo" class="tab-content">
         <div class="upload-zone" id="videoDropZone">
           <input type="file" id="videoInput" accept="video/*" hidden />
-          <p>Chọn video (mp4, webm, mov)<br>
-            <button type="button" id="btnPickVideo" class="link-btn">chọn video</button></p>
-          <p id="videoFileName" class="file-name hidden"></p>
+          <div class="upload-icon" aria-hidden="true">▶</div>
+          <p><strong>Nạp video cần phân tích</strong></p>
+          <p class="upload-hint">Kéo thả MP4, WebM, MOV hoặc
+            <button type="button" id="btnPickVideo" class="link-btn">chọn từ máy</button>
+          </p>
+          <div id="videoFileMeta" class="video-file-meta hidden">
+            <strong id="videoFileName"></strong>
+            <span id="videoFileInfo">Đang đọc thông tin video…</span>
+          </div>
         </div>
-        <video id="fileVideo" class="file-video hidden" controls playsinline></video>
-        <canvas id="videoAnnotatedPreview" class="file-video hidden"></canvas>
-        <div class="controls">
-          <button id="btnAnalyzeVideo" class="btn btn-accent" disabled>Phân tích video</button>
-          <button id="btnStopVideo"    class="btn btn-ghost"  disabled>Dừng</button>
+
+        <div id="videoWorkspace" class="video-comparison hidden">
+          <article class="video-stage">
+            <div class="video-stage-header">
+              <span>Video gốc</span>
+              <span class="stage-badge">INPUT</span>
+            </div>
+            <video id="fileVideo" controls playsinline preload="metadata"></video>
+          </article>
+          <article class="video-stage video-stage-result">
+            <div class="video-stage-header">
+              <span>Kết quả nhận diện</span>
+              <span id="videoLiveBadge" class="stage-badge stage-badge-live">CHỜ</span>
+            </div>
+            <div class="video-result-surface">
+              <canvas id="videoAnnotatedPreview" class="hidden"></canvas>
+              <div id="videoResultPlaceholder" class="video-result-placeholder">
+                Kết quả từ model sẽ hiển thị tại đây
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="video-controls-row">
+          <div class="controls video-actions">
+            <button id="btnAnalyzeVideo" class="btn btn-accent" disabled>Phân tích video</button>
+            <button id="btnStopVideo" class="btn btn-ghost" disabled>Dừng</button>
+          </div>
           <label class="fps-label">
-            FPS <input type="range" id="videoFpsSlider" min="1" max="10" value="5" />
-            <span id="videoFpsValue">5</span>
+            Tốc độ phân tích
+            <input type="range" id="videoFpsSlider" min="1" max="10" value="5" />
+            <strong><span id="videoFpsValue">5</span> FPS</strong>
           </label>
         </div>
         <div class="video-progress hidden" id="videoProgressWrap">
           <div class="progress-bar"><div id="videoProgressBar" class="progress-fill"></div></div>
           <span id="videoProgressText">0%</span>
         </div>
+        <div id="videoProcessingMeta" class="video-processing-meta hidden">
+          <span id="videoFrameCount">0 frame</span>
+          <span id="videoElapsed">00:00 / 00:00</span>
+          <span id="videoProcessingState">Đang chuẩn bị…</span>
+        </div>
         <div id="videoTimeline" class="video-timeline"></div>
+
+        <div id="videoDownloadPanel" class="video-download-panel hidden">
+          <div>
+            <strong>Video kết quả đã sẵn sàng</strong>
+            <span id="videoOutputName">output/video_analyzed.mp4</span>
+          </div>
+          <a id="btnDownloadVideo" class="btn btn-primary" href="#" download>Tải xuống MP4</a>
+        </div>
       </div>
 
       <div id="statusBar" class="status-bar">Khởi tạo hệ thống trước khi phân tích.</div>
