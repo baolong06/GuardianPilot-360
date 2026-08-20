@@ -1,15 +1,47 @@
-"""Check face_landmarks structure on every frame sampled."""
-import cv2
+"""Check face_landmarks structure on every frame sampled.
+
+M1: bo hard-code "E:/KhoiNghiep/GuardianPilot"; dung path tuong doi + argparse.
+
+Usage:
+  python results/check_face_pose.py --video path/to/video.mp4
+"""
+import argparse
 import sys
 from pathlib import Path
 
-ROOT = Path(r"E:/KhoiNghiep/GuardianPilot")
+import cv2
+
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.pipeline import run_holistic
 
-VIDEO = r"E:/KhoiNghiep/GuardianPilot/Drowsiness Detection - Google Chrome 2026-07-30 05-48-18.mp4"
-MODEL = r"E:/KhoiNghiep/GuardianPilot/models/holistic_landmarker.task"
+
+def _resolve_model() -> str:
+    """Tìm holistic_landmarker.task theo đúng thứ tự ưu tiên mà app.py dùng."""
+    from src.model_loader import model_search_roots, resolve_artifact
+    found = resolve_artifact("holistic_landmarker.task", model_search_roots(ROOT))
+    if found is None:
+        raise SystemExit(
+            "Khong tim thay holistic_landmarker.task trong models/compatible, "
+            "models/ hay results/. Chay: python tools/convert_models.py --in-place"
+        )
+    return str(found)
+
+
+def _parse_args(desc: str):
+    parser = argparse.ArgumentParser(description=desc)
+    parser.add_argument("--video", type=Path, required=True,
+                        help="Duong dan video can phan tich")
+    args = parser.parse_args()
+    if not args.video.is_file():
+        raise SystemExit(f"Khong tim thay video: {args.video}")
+    return args
+
+
+_args = _parse_args("Check face_landmarks structure tren tung frame")
+VIDEO = str(_args.video)
+MODEL = _resolve_model()
 
 cap = cv2.VideoCapture(VIDEO)
 fps = cap.get(cv2.CAP_PROP_FPS)

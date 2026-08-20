@@ -8,7 +8,9 @@ import cv2
 import math
 import statistics
 import sys
-sys.path.insert(0, ".")
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 from src.landmarks import (
     compute_mar, LEFT_EYE_EAR_IDX, RIGHT_EYE_EAR_IDX,
     MOUTH_TOP, MOUTH_BOTTOM, MOUTH_LEFT, MOUTH_RIGHT,
@@ -17,6 +19,15 @@ from src.landmarks import (
 
 def _dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _resolve_model() -> str:
+    """M1: tim .task qua model_search_roots thay vi path cung results/."""
+    from src.model_loader import model_search_roots, resolve_artifact
+    found = resolve_artifact("holistic_landmarker.task", model_search_roots(ROOT))
+    if found is None:
+        raise SystemExit("Khong tim thay holistic_landmarker.task")
+    return str(found)
 
 
 def main(video_path):
@@ -30,7 +41,7 @@ def main(video_path):
 
     landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(
         mp.tasks.vision.FaceLandmarkerOptions(
-            base_options=mp.tasks.BaseOptions(model_asset_path="results/holistic_landmarker.task"),
+            base_options=mp.tasks.BaseOptions(model_asset_path=_resolve_model()),
             output_face_blendshapes=False,
             output_facial_transformation_matrixes=False,
             num_faces=1,

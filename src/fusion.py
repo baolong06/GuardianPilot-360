@@ -6,6 +6,7 @@ Quy ước model: output = P(Non-Drowsy), nên p_drowsy = 1 - output.
 """
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections import deque
@@ -14,9 +15,11 @@ import numpy as np
 
 from .perclos import PERCLOSTracker
 from .runtime_profile import get_runtime_profile
-from .scoring import DrowsinessScorer
+from .scoring import DrowsinessScorer, DriverState
 from .frequency import EventFrequencyCounter
 from .looking_away import LookingAwayDetector
+
+logger = logging.getLogger(__name__)
 
 # ── Hyperparameters (từ notebook) ────────────────────────────────────────────
 WINDOW_SIZE         = 30     # số frame trong cửa sổ LSTM
@@ -59,10 +62,58 @@ MLP_FEAT_COLS = ("ear_left", "ear_right", "ear_avg", "mar",
                  "pitch", "yaw", "roll", "neck_tilt", "has_neck_tilt")
 
 
+def _ffill_bfill(seq: np.ndarray) -> np.ndarray:
+    """
+    Forward-fill rồi backward-fill NaN theo trục thời gian, cho từng cột.
+
+    Tương đương `pandas.DataFrame(...).ffill().bfill()` nhưng không cần pandas
+    (L2 — pandas là dependency duy nhất chỉ để làm đúng việc này).
+
+    LƯU Ý: cột NaN trên TOÀN BỘ window vẫn còn NaN sau hàm này — đúng như
+    pandas. Caller bắt buộc phải xử lý tiếp (xem C2 trong update()).
+    """
+    out = np.array(seq, dtype=np.float32, copy=True)
+    if out.size == 0:
+        return out
+    n_rows, n_cols = out.shape
+    for col in range(n_cols):
+        column = out[:, col]
+        # forward
+        last = np.float32("nan")
+        for i in range(n_rows):
+            if math.isnan(column[i]):
+                column[i] = last
+            else:
+                last = column[i]
+        # backward
+        last = np.float32("nan")
+        for i in range(n_rows - 1, -1, -1):
+            if math.isnan(column[i]):
+                column[i] = last
+            else:
+                last = column[i]
+    return out
+
+
+def _finite(value: float) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
 class FusionState:
     """Stateful fusion — giữ buffer LSTM, EMA, và debounce timer."""
 
     def __init__(self):
+        # ── Ngưỡng runtime (H4) ──────────────────────────────────────────
+        # Trước đây update() đọc thẳng hằng số module → 3 knob eye-closure
+        # trong /api/thresholds trả "ok" nhưng KHÔNG đổi được hành vi.
+        # Nay là instance attribute, đổi qua apply_thresholds().
+        self.eye_closed_thresh:    float = EYE_CLOSED_THRESH
+        self.eye_closed_on_sec:    float = EYE_CLOSED_ON_SEC
+        self.eye_closed_hard_sec:  float = EYE_CLOSED_HARD_SEC
+
         self.ema_prob:         float | None = None
         self.neck_baseline:    float | None = None
         self.feature_buffer:   deque        = deque(maxlen=WINDOW_SIZE)
@@ -93,7 +144,7 @@ class FusionState:
         # PERCLOS tracker (L1)
         self.perclos_tracker: PERCLOSTracker = PERCLOSTracker(
             window_sec=30.0,
-            eye_closed_threshold=EYE_CLOSED_THRESH
+            eye_closed_threshold=self.eye_closed_thresh
         )
         # Drowsiness scoring state machine (L2)
         self.scorer: DrowsinessScorer = DrowsinessScorer()
@@ -107,7 +158,78 @@ class FusionState:
         self.phone_suspected: bool = False
 
     def reset(self):
-        self.__init__()
+        """
+        Xoá state nhận diện nhưng GIỮ ngưỡng đã cấu hình (L3 + H4).
+
+        Trước đây hàm này gọi `self.__init__()`, nghĩa là mọi ngưỡng HITL mà
+        Safety Engineer vừa đặt qua /api/thresholds sẽ bị thổi bay mỗi lần
+        /api/reset — một hành vi rất dễ gây nhầm lẫn trong lúc tinh chỉnh.
+        """
+        self.ema_prob = None
+        self.neck_baseline = None
+        self.feature_buffer.clear()
+        self.alarm_on = False
+        self.last_ts_ms = None
+        self.time_above_on_ms = 0.0
+        self.time_below_off_ms = 0.0
+
+        self.ear_left_smooth = None
+        self.ear_right_smooth = None
+        self.ear_avg_smooth = None
+        self.eye_closed_streak_ms = 0.0
+        self.eyes_open_streak_ms = 0.0
+        self.neck_recovered_streak_ms = 0.0
+        self.neck_peak_buffer.clear()
+
+        self.pitch_baseline = None
+        self.pitch_peak_buffer.clear()
+
+        self.yawn_state = "IDLE"
+        self.yawn_open_started_ms = None
+        self.yawn_last_trigger_ms = -1e9
+
+        # Reset tại chỗ — giữ nguyên cấu hình ngưỡng của từng sub-detector
+        self.perclos_tracker.reset()
+        self.scorer.reset()
+        self.head_nod_counter.reset()
+        self.yawn_counter.reset()
+        self.looking_away.reset()
+
+        self.risk_multiplier = 1.0
+        self.phone_suspected = False
+
+    def apply_thresholds(self, thresholds: dict) -> None:
+        """
+        H4: đẩy knob HITL vào state này.
+
+        Bao gồm cả 3 knob eye-closure trước đây bị bỏ quên hoàn toàn
+        (`eye_closed_thresh`, `eye_closed_on_sec`, `eye_closed_hard_sec`)
+        và đồng bộ luôn ngưỡng của PERCLOSTracker — nếu không, PERCLOS sẽ
+        đếm "mắt nhắm" theo một ngưỡng khác với rule eye-closure.
+        """
+        if "eye_closed_thresh" in thresholds:
+            self.eye_closed_thresh = float(thresholds["eye_closed_thresh"])
+            self.perclos_tracker.eye_closed_threshold = self.eye_closed_thresh
+        if "eye_closed_on_sec" in thresholds:
+            self.eye_closed_on_sec = float(thresholds["eye_closed_on_sec"])
+        if "eye_closed_hard_sec" in thresholds:
+            self.eye_closed_hard_sec = float(thresholds["eye_closed_hard_sec"])
+
+        if "yaw_thresh_deg" in thresholds:
+            self.looking_away.yaw_thresh_deg = float(thresholds["yaw_thresh_deg"])
+        if "looking_away_min_sec" in thresholds:
+            self.looking_away.min_duration_ms = (
+                float(thresholds["looking_away_min_sec"]) * 1000.0
+            )
+
+        for key, state in (
+            ("fatigue_on", DriverState.FATIGUE),
+            ("drowsy_on", DriverState.DROWSY),
+            ("microsleep_on", DriverState.MICROSLEEP),
+        ):
+            if key in thresholds:
+                on = float(thresholds[key])
+                self.scorer.set_threshold(state, on, on - 0.05)
 
     def touch(self, timestamp_ms: float):
         """Đồng bộ last_ts_ms khi không có face (no-face gap).
@@ -196,9 +318,19 @@ class FusionState:
              for c in MLP_FEAT_COLS],
             dtype=np.float32,
         )
-        mlp_row = np.nan_to_num(mlp_row, nan=0.0)
-        x_mlp = mlp_scaler.transform(mlp_row.reshape(1, -1))
+        mlp_row = np.nan_to_num(mlp_row, nan=0.0, posinf=0.0, neginf=0.0)
+        x_mlp = np.nan_to_num(
+            np.asarray(mlp_scaler.transform(mlp_row.reshape(1, -1)), dtype=np.float32),
+            nan=0.0, posinf=0.0, neginf=0.0,
+        )
         p_non_drowsy_mlp = float(mlp_model.predict(x_mlp, verbose=0)[0, 0])
+        if not _finite(p_non_drowsy_mlp):
+            # C2: model trả NaN/Inf → coi như "không có tín hiệu từ model".
+            # Chọn 1.0 (= p_drowsy 0.0) chứ không phải 0.0, vì báo động giả
+            # hàng loạt do model hỏng còn tệ hơn: các rule eye-closure /
+            # neck-tilt / yawn vẫn chạy độc lập và vẫn bật được cảnh báo.
+            logger.warning("MLP trả giá trị không hữu hạn — bỏ qua tín hiệu MLP frame này.")
+            p_non_drowsy_mlp = 1.0
         p_mlp_drowsy = 1.0 - p_non_drowsy_mlp
 
         # ── Neck-tilt alarm ────────────────────────────────────────────────
@@ -276,14 +408,14 @@ class FusionState:
         eye_alarm = False
         eye_microsleep = False
         if ear_smooth is not None:
-            if ear_smooth < EYE_CLOSED_THRESH:
+            if ear_smooth < self.eye_closed_thresh:
                 self.eye_closed_streak_ms += dt_ms
             else:
                 self.eye_closed_streak_ms = 0.0
-            if self.eye_closed_streak_ms >= EYE_CLOSED_HARD_SEC * 1000:
+            if self.eye_closed_streak_ms >= self.eye_closed_hard_sec * 1000:
                 eye_alarm = True
                 eye_microsleep = True
-            elif self.eye_closed_streak_ms >= EYE_CLOSED_ON_SEC * 1000:
+            elif self.eye_closed_streak_ms >= self.eye_closed_on_sec * 1000:
                 eye_alarm = True
 
         # YawnDetector state machine ───────────────────────────────────────
@@ -333,16 +465,29 @@ class FusionState:
         )
         p_lstm_drowsy = None
         if enable_lstm and len(self.feature_buffer) == WINDOW_SIZE:
-            import pandas as pd
-            seq = pd.DataFrame(
-                list(self.feature_buffer), columns=list(LSTM_FEAT_COLS)
-            ).ffill().bfill().values.astype(np.float32)
+            seq = _ffill_bfill(
+                np.asarray(list(self.feature_buffer), dtype=np.float32)
+            )
+            # ── C2: chặn NaN rò xuống model ────────────────────────────────
+            # Nếu MỘT cột NaN suốt cả 30 frame (rất hay gặp: neck_tilt khi
+            # MediaPipe không bắt được pose vai), ffill/bfill không cứu được.
+            # StandardScaler cho NaN đi qua (ensure_all_finite="allow-nan"),
+            # Keras nhân NaN ra NaN, và Flask jsonify sinh literal `NaN` —
+            # JSON KHÔNG hợp lệ → res.json() ở frontend throw → live view chết.
+            # Điền 0.0 giống hệt quy ước đang dùng cho MLP ở trên.
+            seq = np.nan_to_num(seq, nan=0.0, posinf=0.0, neginf=0.0)
             n_feat = seq.shape[1]
-            seq_scaled = lstm_scaler.transform(seq).reshape(1, WINDOW_SIZE, n_feat)
+            seq_scaled = np.nan_to_num(
+                np.asarray(lstm_scaler.transform(seq), dtype=np.float32),
+                nan=0.0, posinf=0.0, neginf=0.0,
+            ).reshape(1, WINDOW_SIZE, n_feat)
             p_non_drowsy_lstm = float(
                 lstm_model.predict(seq_scaled, verbose=0)[0, 0]
             )
-            p_lstm_drowsy = 1.0 - p_non_drowsy_lstm
+            if _finite(p_non_drowsy_lstm):
+                p_lstm_drowsy = 1.0 - p_non_drowsy_lstm
+            else:
+                logger.warning("LSTM trả giá trị không hữu hạn — bỏ qua LSTM frame này.")
 
         # ── Fusion ────────────────────────────────────────────────────────
         # LSTM hay bị "kẹt" ở ~0.55 (model kém reactive với EAR).
@@ -369,7 +514,7 @@ class FusionState:
         # alarm (combined=0 ngay từ đầu). Persistent miễn là mắt còn mở
         # → MLP-stuck không kéo alarm bật lại. Reset khi EAR < threshold.
         ear_open_overridden = (
-            ear_smooth is not None and ear_smooth > EYE_CLOSED_THRESH
+            ear_smooth is not None and ear_smooth > self.eye_closed_thresh
         )
         if ear_open_overridden:
             self.eyes_open_streak_ms = min(

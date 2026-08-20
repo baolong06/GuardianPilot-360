@@ -7,7 +7,9 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 
 const URL = 'http://127.0.0.1:5000/';
-const OUT = 'e:/KhoiNghiep/GuardianPilot/tools/diagnose_live.log';
+// M1: log ghi cạnh chính file script, không hard-code ổ đĩa máy cá nhân.
+const path = require('path');
+const OUT = path.join(__dirname, 'diagnose_live.log');
 
 function log(...a) {
   const line = '[diag] ' + a.join(' ');

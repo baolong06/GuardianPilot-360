@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import logging
+import math
 import os
 import sys
 import time
@@ -21,26 +23,26 @@ BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))
 
 from src.landmarks import extract_features
-from src.fusion import FusionState
 from src.pipeline import run_holistic
-from src.alert_manager import AlertManager, ALERT_MESSAGES, channels_for_level
+from src.alert_manager import ALERT_MESSAGES, channels_for_level
+from src.auth import auth_status, request_is_authorized, require_api_key
+from src.camera import describe as describe_camera
 from src.event_logger import EventLogger
 from src.scoring import DriverState
 from src.metrics import collect_metrics, InferenceWatchdog
-from src.camera_obstruction import CameraObstructionDetector
-from src.context import DrivingContext
-from src.trip_memory import TripMemory
 from src.phone_distraction import (
-    PhoneDistractionDetector,
     wrists_from_pose,
     face_geometry_from_landmarks,
 )
+from src.session import DEFAULT_SESSION_ID, SessionStore
 from src import thresholds as threshold_store
 from src.model_loader import load_drowsiness_bundle
 from src.runtime_profile import apply_process_limits, get_runtime_profile
 from src.video_output import VideoOutputError, VideoOutputStore
 
 apply_process_limits()
+
+logger = logging.getLogger(__name__)
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 MODELS_DIR = BASE_DIR / "models"
@@ -52,108 +54,163 @@ app = Flask(
     static_folder=str(BASE_DIR / "web" / "static"),
 )
 
+# M3: chặn payload base64 khổng lồ. `/api/analyze` giữ khoá inference suốt thời
+# gian xử lý, nên một request vài trăm MB đủ để treo toàn bộ service.
+MAX_UPLOAD_MB = float(os.getenv("MAX_UPLOAD_MB", "12"))
+app.config["MAX_CONTENT_LENGTH"] = int(MAX_UPLOAD_MB * 1024 * 1024)
+MAX_FRAME_WIDTH = 3840
+MAX_FRAME_HEIGHT = 2160
+
 _video_outputs = VideoOutputStore(BASE_DIR / "output")
 
 # ── State ────────────────────────────────────────────────────────────────────
-_lock         = threading.Lock()
+# H2: state nhận diện KHÔNG còn là biến toàn cục dùng chung. Mỗi session_id có
+# FusionState/AlertManager/TripMemory… riêng (src/session.py). Request không gửi
+# session_id thì rơi vào session "default" ⇒ tương thích ngược hoàn toàn.
+#
+# `_infer_lock` vẫn là khoá TOÀN CỤC vì nó bảo vệ tài nguyên dùng chung:
+# MediaPipe landmarker là singleton và không thread-safe, model Keras cũng dùng
+# chung. Tách state theo session giải quyết đúng vấn đề trộn dữ liệu; nó không
+# nhằm tăng throughput.
+_infer_lock   = threading.Lock()
+_sessions     = SessionStore()
 _mlp_model    = None
 _lstm_model   = None
 _mlp_scaler   = None
 _lstm_scaler  = None
-_fusion       = FusionState()
-_alert_mgr    = AlertManager()
-_event_logger = EventLogger()
+_event_logger: EventLogger | None = None
+_event_logger_lock = threading.Lock()
 _initialized  = False
 _init_error: str | None = None
 _rule_only_mode: bool = False
 _model_load_mode: str | None = None
-# Session metadata (MVP — có thể set qua /api/init)
-_driver_id: str | None = "driver_demo"
-_vehicle_id: str | None = "vehicle_demo"
-# GPS giả lập (API-04) — None nếu chưa có hardware
-_gps_lat: float | None = None
-_gps_lng: float | None = None
+
+# Giữ alias cho tương thích ngược với script/test cũ đang đọc `_lock`.
+_lock = _infer_lock
+
+
+def _get_event_logger() -> EventLogger:
+    """
+    M6: khởi tạo EventLogger lười.
+
+    Trước đây nó được tạo ở module scope, nên chỉ cần `import app` (pytest,
+    tooling, sphinx…) là đã tạo `data/events.db` + `data/snapshots/` trong cây
+    làm việc — và fail hẳn nếu filesystem read-only trong container.
+    """
+    global _event_logger
+    if _event_logger is None:
+        with _event_logger_lock:
+            if _event_logger is None:
+                _event_logger = EventLogger()
+    return _event_logger
 
 
 def _watchdog_reload():
     """SYS-05: khi inference stale → thử reload model."""
-    logger = __import__("logging").getLogger("watchdog")
-    logger.warning("Watchdog triggering model reload…")
+    wd_logger = logging.getLogger("watchdog")
+    wd_logger.warning("Watchdog triggering model reload…")
     try:
-        with _lock:
+        with _infer_lock:
             _load_models()
-        logger.info("Watchdog model reload OK")
+        wd_logger.info("Watchdog model reload OK")
     except Exception as exc:
-        logger.error("Watchdog model reload failed: %s", exc)
+        wd_logger.error("Watchdog model reload failed: %s", exc)
 
 
 _watchdog = InferenceWatchdog(stale_sec=5.0, on_stale=_watchdog_reload)
-_camera_obs = CameraObstructionDetector(threshold_sec=10.0)
-_driving_ctx = DrivingContext()
-_trip_memory = TripMemory()
-_phone_det = PhoneDistractionDetector()
-_inference_fps: float = 0.0
-_last_infer_ts: float | None = None
+
+
+# ── Session helpers (H2) ─────────────────────────────────────────────────────
+def _session_id_from_request(body: dict | None = None) -> str:
+    """Ưu tiên header X-Session-Id, sau đó body.session_id, cuối cùng 'default'."""
+    sid = request.headers.get("X-Session-Id")
+    if not sid and body:
+        sid = body.get("session_id")
+    if not sid:
+        sid = request.args.get("session_id")
+    return sid or DEFAULT_SESSION_ID
+
+
+def _get_session(body: dict | None = None):
+    session = _sessions.get(_session_id_from_request(body))
+    session.apply_thresholds(threshold_store.get_thresholds())
+    return session
 
 
 def _apply_runtime_thresholds():
-    """Push HITL knobs into live detectors (best-effort)."""
-    t = threshold_store.get_thresholds()
-    _fusion.looking_away.yaw_thresh_deg = t["yaw_thresh_deg"]
-    _fusion.looking_away.min_duration_ms = t["looking_away_min_sec"] * 1000.0
-    _phone_det.near_frac = t["phone_near_frac"]
-    _phone_det.min_duration_ms = t["phone_min_sec"] * 1000.0
-    _driving_ctx.high_speed_kmh = t["high_speed_kmh"]
-    _driving_ctx.long_drive_sec = t["long_drive_sec"]
-    from src.scoring import DriverState as DS
-    _fusion.scorer.THRESHOLDS[DS.FATIGUE] = (t["fatigue_on"], t["fatigue_on"] - 0.05)
-    _fusion.scorer.THRESHOLDS[DS.DROWSY] = (t["drowsy_on"], t["drowsy_on"] - 0.05)
-    _fusion.scorer.THRESHOLDS[DS.MICROSLEEP] = (t["microsleep_on"], t["microsleep_on"] - 0.05)
+    """
+    Push HITL knobs xuống mọi session đang sống.
+
+    H3/H4: việc áp ngưỡng nay đi qua `DriverSession.apply_thresholds()` →
+    `FusionState.apply_thresholds()` → `DrowsinessScorer.set_threshold()`.
+    Trước đây hàm này ghi thẳng vào `DrowsinessScorer.THRESHOLDS` (class
+    attribute) và bỏ quên hoàn toàn 3 knob eye-closure.
+    """
+    _sessions.apply_thresholds_all(threshold_store.get_thresholds())
 
 
-def _prepare_fusion_inputs(result, w: int, h: int, ts_ms: float) -> dict:
+def _json_safe(value):
+    """
+    C2: đổi mọi float không hữu hạn thành None trước khi jsonify.
+
+    `json.dumps` của Python (và do đó `flask.jsonify`) mặc định sinh literal
+    `NaN`/`Infinity` — đó KHÔNG phải JSON hợp lệ, `JSON.parse` của trình duyệt
+    ném lỗi và cả vòng lặp live chết. Đây là lưới an toàn tầng hai; tầng một là
+    các guard ngay tại nguồn trong src/fusion.py.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, np.floating):
+        v = float(value)
+        return v if math.isfinite(v) else None
+    if isinstance(value, np.integer):
+        return int(value)
+    return value
+
+
+def _json_response(payload: dict, status: int = 200):
+    return jsonify(_json_safe(payload)), status
+
+
+def _prepare_fusion_inputs(session, result, w: int, h: int, ts_ms: float) -> dict:
     """Phone heuristic + vehicle risk before FusionState.update()."""
-    global _inference_fps, _last_infer_ts
-    phone = _update_phone_from_result(result, w, h, ts_ms)
-    veh = _driving_ctx.update()
-    _fusion.phone_suspected = bool(phone.get("phone_suspected"))
-    _fusion.risk_multiplier = veh.risk_multiplier
-    if _last_infer_ts is not None:
-        dt = max(1e-3, (ts_ms - _last_infer_ts) / 1000.0)
-        inst = 1.0 / dt
-        _inference_fps = 0.8 * _inference_fps + 0.2 * inst if _inference_fps else inst
-    _last_infer_ts = ts_ms
+    phone = _update_phone_from_result(session, result, w, h, ts_ms)
+    veh = session.driving_context.update()
+    session.fusion.phone_suspected = bool(phone.get("phone_suspected"))
+    session.fusion.risk_multiplier = veh.risk_multiplier
+    # M2: FPS đo bằng đồng hồ thực trong session.note_inference(), KHÔNG dùng
+    # ts_ms — với video upload ts_ms là media timeline nên FPS báo ra sẽ là FPS
+    # của video chứ không phải tốc độ xử lý của server.
+    session.note_inference()
     return phone
 
 
-def _post_fusion(fused: dict, phone: dict, ts_ms: float, face_ok: bool) -> dict:
+def _post_fusion(session, fused: dict, phone: dict, ts_ms: float,
+                 face_ok: bool) -> dict:
     fused.update({
         "phone_suspected": phone.get("phone_suspected", False),
         "phone_streak_ms": phone.get("phone_streak_ms", 0.0),
         "phone_count_window": phone.get("phone_count_window", 0),
-        "inference_fps": round(_inference_fps, 1),
+        "inference_fps": round(session.inference_fps, 1),
     })
     if face_ok:
-        fused["camera_obstructed"] = _camera_obs.update(True, ts_ms)
-    return _enrich_context_and_memory(fused)
+        fused["camera_obstructed"] = session.camera_obstruction.update(True, ts_ms)
+    return _enrich_context_and_memory(session, fused)
 
 
-def _session_reset():
-    global _inference_fps, _last_infer_ts
-    _fusion.reset()
-    _alert_mgr.reset()
-    _camera_obs.reset()
-    _driving_ctx.reset()
-    _trip_memory.reset()
-    _phone_det.reset()
-    _inference_fps = 0.0
-    _last_infer_ts = None
-    _apply_runtime_thresholds()
+def _session_reset(session):
+    session.reset()
+    session.apply_thresholds(threshold_store.get_thresholds())
 
 
-def _update_phone_from_result(result, w: int, h: int, ts_ms: float) -> dict:
+def _update_phone_from_result(session, result, w: int, h: int, ts_ms: float) -> dict:
+    detector = session.phone_detector
     if result is None:
-        return _phone_det.update(ts_ms, face_center=None, face_size=None, wrists=None)
+        return detector.update(ts_ms, face_center=None, face_size=None, wrists=None)
     face_lm = getattr(result, "face_landmarks", None)
     pose_lm = getattr(result, "pose_landmarks", None)
     # TransformedResult stores list-of-lists
@@ -161,20 +218,20 @@ def _update_phone_from_result(result, w: int, h: int, ts_ms: float) -> dict:
     pose_pts = pose_lm[0] if pose_lm else None
     center, size = face_geometry_from_landmarks(face_pts, w, h)
     wrists = wrists_from_pose(pose_pts, w, h) if pose_pts else []
-    return _phone_det.update(
+    return detector.update(
         ts_ms, face_center=center, face_size=size, wrists=wrists
     )
 
 
-def _enrich_context_and_memory(fused: dict) -> dict:
-    veh = _driving_ctx.update()
+def _enrich_context_and_memory(session, fused: dict) -> dict:
+    veh = session.driving_context.update()
     fused["vehicle_speed"] = veh.speed_kmh
     fused["driving_time_sec"] = veh.driving_time_sec
     fused["risk_multiplier"] = veh.risk_multiplier
     fused["channels"] = fused.get("channels") or channels_for_level(
         int(fused.get("alert_level", 0))
     )
-    _trip_memory.update(
+    session.trip_memory.update(
         perclos=float(fused.get("perclos_ratio") or fused.get("perclos") or 0.0),
         drowsiness_state=str(fused.get("drowsiness_state", "NORMAL")),
         alert_level=int(fused.get("alert_level", 0)),
@@ -182,14 +239,16 @@ def _enrich_context_and_memory(fused: dict) -> dict:
         phone_suspected=bool(fused.get("phone_suspected")),
     )
     fused["trip_summary_brief"] = {
-        "perclos_peak": _trip_memory.perclos_peak,
-        "alert_peak": _trip_memory.alert_peak,
-        "samples": _trip_memory.samples,
+        "perclos_peak": session.trip_memory.perclos_peak,
+        "alert_peak": session.trip_memory.alert_peak,
+        "samples": session.trip_memory.samples,
     }
+    fused["session_id"] = session.session_id
     return fused
 
 
 def _apply_alert_and_log(
+    session,
     fused: dict,
     frame: np.ndarray | None = None,
     feat: dict | None = None,
@@ -201,7 +260,7 @@ def _apply_alert_and_log(
     except KeyError:
         state = DriverState(int(fused.get("alert_level", 0)))
 
-    status = _alert_mgr.update(state)
+    status = session.alert_manager.update(state)
     fused["alert_level"] = status.alert_level
     fused["alert_message"] = status.alert_message
     fused["drowsiness_state"] = status.drowsiness_state
@@ -218,16 +277,16 @@ def _apply_alert_and_log(
                 ear = float(ear_v)
             if neck_v is not None and neck_v == neck_v:
                 neck = float(neck_v)
-        _event_logger.log_event(
+        _get_event_logger().log_event(
             status.alert_level,
-            driver_id=_driver_id,
-            vehicle_id=_vehicle_id,
+            driver_id=session.driver_id,
+            vehicle_id=session.vehicle_id,
             ear_avg=ear,
             perclos=perclos,
             neck_tilt=neck,
             frame=frame,
-            gps_lat=_gps_lat,
-            gps_lng=_gps_lng,
+            gps_lat=session.gps_lat,
+            gps_lng=session.gps_lng,
         )
     return fused
 
@@ -245,6 +304,37 @@ def _load_models():
         def predict(self, x, verbose=0):
             # Output shape compatible with keras binary model: [[P(non_drowsy)]]
             return np.ones((x.shape[0], 1), dtype=np.float32)
+
+    def _enable_rule_only(reason: str, model_load_mode: str = "rule-only"):
+        """Chạy bằng rule engine, model trả P(non-drowsy)=1.0 (tức p_drowsy=0)."""
+        globals().update(
+            _mlp_model=_ConstantNonDrowsyModel(),
+            _lstm_model=_ConstantNonDrowsyModel(),
+            _mlp_scaler=_IdentityScaler(),
+            _lstm_scaler=_IdentityScaler(),
+            _initialized=True,
+            _rule_only_mode=True,
+            _model_load_mode=model_load_mode,
+            _init_error=reason,
+        )
+
+    # ── C4 (giảm thiểu): chủ động bỏ qua model ────────────────────────────
+    # Khác hẳn ALLOW_RULE_ONLY_MODE — cái đó chỉ là fallback KHI load thất bại.
+    # FORCE_RULE_ONLY là lựa chọn có chủ đích: báo cáo reports/live_diagnostic.md
+    # ghi nhận MLP trả p_drowsy≈0.585 khi mắt đang mở bình thường (EAR=0.30).
+    # Chừng nào model chưa được retrain + đánh giá trên test set có nhãn, vận
+    # hành bằng rule engine (eye-closure / neck-tilt / yawn / PERCLOS) là lựa
+    # chọn hợp lệ và đáng tin hơn.
+    if os.getenv("FORCE_RULE_ONLY", "false").lower() in {"1", "true", "yes", "on"}:
+        # Vẫn cần file .task của MediaPipe để trích landmark.
+        bundle = load_drowsiness_bundle(BASE_DIR)
+        _holistic_task_path = bundle["holistic_task"]
+        _enable_rule_only(
+            "FORCE_RULE_ONLY=true — bỏ qua MLP/LSTM theo cấu hình, "
+            "chỉ dùng rule engine.",
+            model_load_mode="rule-only-forced",
+        )
+        return
 
     try:
         bundle = load_drowsiness_bundle(BASE_DIR)
@@ -279,15 +369,8 @@ def _load_models():
             raise
 
         # Fallback mode: keep service usable without trained artifacts.
-        _mlp_model = _ConstantNonDrowsyModel()
-        _lstm_model = _ConstantNonDrowsyModel()
-        _mlp_scaler = _IdentityScaler()
-        _lstm_scaler = _IdentityScaler()
-        _initialized = True
-        _rule_only_mode = True
         short_reason = str(exc).splitlines()[0][:240]
-        _model_load_mode = "rule-only"
-        _init_error = (
+        _enable_rule_only(
             f"Rule-only mode enabled: {short_reason}. "
             "Run: python tools/convert_models.py --in-place"
         )
@@ -298,13 +381,26 @@ def _decode_image(data: str) -> np.ndarray:
         raise ValueError("Image data is empty or whitespace.")
     if "," in data:
         data = data.split(",", 1)[1]
+    # M3: chặn base64 quá khổ trước khi tốn RAM giải mã. MAX_CONTENT_LENGTH của
+    # Flask đã chặn ở tầng HTTP; đây là chốt thứ hai cho các caller nội bộ.
+    max_raw_bytes = app.config["MAX_CONTENT_LENGTH"]
+    if len(data) > max_raw_bytes * 2:
+        raise ValueError(f"Ảnh vượt giới hạn {MAX_UPLOAD_MB:g} MB.")
     raw   = base64.b64decode(data)
     if len(raw) == 0:
         raise ValueError("Decoded image is empty (0 bytes).")
+    if len(raw) > max_raw_bytes:
+        raise ValueError(f"Ảnh vượt giới hạn {MAX_UPLOAD_MB:g} MB.")
     arr   = np.frombuffer(raw, dtype=np.uint8)
     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if frame is None:
         raise ValueError(f"Không giải mã được ảnh (raw bytes: {len(raw)})")
+    h, w = frame.shape[:2]
+    if w > MAX_FRAME_WIDTH or h > MAX_FRAME_HEIGHT:
+        raise ValueError(
+            f"Độ phân giải {w}x{h} vượt giới hạn "
+            f"{MAX_FRAME_WIDTH}x{MAX_FRAME_HEIGHT}."
+        )
     return frame
 
 
@@ -458,34 +554,37 @@ def dashboard():
 @app.route("/api/init", methods=["POST"])
 def api_init():
     """Load model + warm-up. Gọi 1 lần trước khi phân tích."""
-    global _fusion, _alert_mgr, _driver_id, _vehicle_id, _gps_lat, _gps_lng
     body = request.get_json(silent=True) or {}
-    with _lock:
-        _session_reset()
+    with _infer_lock:
+        session = _get_session(body)
+        _session_reset(session)
         if "driver_id" in body:
-            _driver_id = body.get("driver_id")
+            session.driver_id = body.get("driver_id")
         if "vehicle_id" in body:
-            _vehicle_id = body.get("vehicle_id")
+            session.vehicle_id = body.get("vehicle_id")
         if "gps_lat" in body:
-            _gps_lat = body.get("gps_lat")
+            session.gps_lat = body.get("gps_lat")
         if "gps_lng" in body:
-            _gps_lng = body.get("gps_lng")
+            session.gps_lng = body.get("gps_lng")
         if "speed_kmh" in body:
-            _driving_ctx.set_speed(float(body["speed_kmh"]))
+            session.driving_context.set_speed(float(body["speed_kmh"]))
         try:
             _load_models()
             if _rule_only_mode:
                 return jsonify({
                     "ok": True,
-                    "message": "Initialized in rule-only mode (models not found).",
+                    "message": "Initialized in rule-only mode.",
                     "rule_only_mode": True,
+                    "load_mode": _model_load_mode,
                     "warning": _init_error,
+                    "session_id": session.session_id,
                 })
             return jsonify({
                 "ok": True,
                 "message": "Models loaded.",
                 "rule_only_mode": False,
                 "load_mode": _model_load_mode,
+                "session_id": session.session_id,
             })
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
@@ -494,19 +593,31 @@ def api_init():
 @app.route("/api/runtime-profile")
 def api_runtime_profile():
     """Cấu hình runtime theo EDGE_PROFILE (dev vs automotive edge)."""
-    return jsonify({"ok": True, **get_runtime_profile()})
+    return jsonify({
+        "ok": True,
+        **get_runtime_profile(),
+        # H5: frontend lấy ngưỡng "mắt nhắm" từ đây thay vì hard-code 0.20,
+        # để UI và backend luôn nói cùng một con số.
+        "eye_closed_thresh": threshold_store.get_thresholds()["eye_closed_thresh"],
+        "camera": describe_camera(),
+        **auth_status(),
+    })
 
 
 @app.route("/api/status")
 def api_status():
+    session = _get_session()
     return jsonify({
         "ok":          True,
         "initialized": _initialized,
         "error":       _init_error,
-        "alert_level": _alert_mgr.alert_level,
+        "alert_level": session.alert_manager.alert_level,
         "rule_only_mode": _rule_only_mode,
         "load_mode": _model_load_mode,
         "runtime_profile": get_runtime_profile().get("profile"),
+        "session_id": session.session_id,
+        "sessions": _sessions.stats(),
+        **auth_status(),
     })
 
 
@@ -587,9 +698,11 @@ def api_analyze():
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
-    with _lock:
+    with _infer_lock:
+        session = _get_session(body)
+        fusion = session.fusion
         if reset_state:
-            _session_reset()
+            _session_reset(session)
 
         h, w = frame.shape[:2]
         # Uploaded video must use its media timeline. Using server wall-clock time
@@ -602,27 +715,29 @@ def api_analyze():
             return jsonify({"ok": False, "error": f"MediaPipe: {exc}"}), 500
 
         feat = extract_features(result, w, h)
-        phone = _prepare_fusion_inputs(result, w, h, ts_ms)
-        veh = _driving_ctx.snapshot()
+        phone = _prepare_fusion_inputs(session, result, w, h, ts_ms)
+        veh = session.driving_context.snapshot()
+        alert_level = session.alert_manager.alert_level
 
         if feat is None:
-            _fusion.touch(ts_ms)  # sync last_ts_ms — prevent stale-dt on next face
-            obstructed = _camera_obs.update(False, ts_ms)
+            fusion.touch(ts_ms)  # sync last_ts_ms — prevent stale-dt on next face
+            obstructed = session.camera_obstruction.update(False, ts_ms)
             resp = {
                 "ok":               True,
                 "face_found":       False,
-                "alarm_on":         _fusion.alarm_on,
-                "ema_prob":         round(_fusion.ema_prob or 0.0, 4),
+                "session_id":       session.session_id,
+                "alarm_on":         fusion.alarm_on,
+                "ema_prob":         round(fusion.ema_prob or 0.0, 4),
                 "neck_alarm":       False,
                 "eye_alarm":        False,
                 "yawn_alarm":       False,
-                "perclos":          round(_fusion.perclos_tracker.get_perclos(), 4),
-                "perclos_ratio":    round(_fusion.perclos_tracker.get_perclos(), 4),
-                "drowsiness_state": _fusion.scorer.get_state_name(),
+                "perclos":          round(fusion.perclos_tracker.get_perclos(), 4),
+                "perclos_ratio":    round(fusion.perclos_tracker.get_perclos(), 4),
+                "drowsiness_state": fusion.scorer.get_state_name(),
                 "drowsiness_score": 0.0,
-                "alert_level":      _alert_mgr.alert_level,
-                "alert_message":    ALERT_MESSAGES.get(_alert_mgr.alert_level, ""),
-                "channels":         channels_for_level(_alert_mgr.alert_level),
+                "alert_level":      alert_level,
+                "alert_message":    ALERT_MESSAGES.get(alert_level, ""),
+                "channels":         channels_for_level(alert_level),
                 "camera_obstructed": obstructed,
                 "looking_away":     False,
                 "phone_suspected":  phone.get("phone_suspected", False),
@@ -632,15 +747,15 @@ def api_analyze():
             }
             if annotate:
                 fused_stub = {
-                    "alarm_on": _fusion.alarm_on,
-                    "ema_prob": round(_fusion.ema_prob or 0.0, 4),
+                    "alarm_on": fusion.alarm_on,
+                    "ema_prob": round(fusion.ema_prob or 0.0, 4),
                     "neck_alarm": False,
                     "eye_alarm": False,
                     "yawn_alarm": False,
                     "p_mlp_drowsy": None, "p_lstm_drowsy": None,
-                    "ear_smooth": getattr(_fusion, "ear_smooth", None),
-                    "eyes_open_streak_ms": round(_fusion.eyes_open_streak_ms, 1),
-                    "eye_closed_streak_ms": round(_fusion.eye_closed_streak_ms, 1),
+                    "ear_smooth": getattr(fusion, "ear_smooth", None),
+                    "eyes_open_streak_ms": round(fusion.eyes_open_streak_ms, 1),
+                    "eye_closed_streak_ms": round(fusion.eye_closed_streak_ms, 1),
                 }
                 annotated = _annotate_frame(frame, result, None, fused_stub)
                 if output_id:
@@ -649,21 +764,21 @@ def api_analyze():
                     except VideoOutputError as exc:
                         return jsonify({"ok": False, "error": str(exc)}), 400
                 resp["annotated_frame"] = _encode_frame(annotated)
-            return jsonify(resp)
+            return _json_response(resp)
 
-        fused = _fusion.update(
+        fused = fusion.update(
             feat, _mlp_model, _lstm_model,
             _mlp_scaler, _lstm_scaler,
             timestamp_ms=ts_ms,
         )
-        fused = _apply_alert_and_log(fused, frame=frame, feat=feat)
-        fused = _post_fusion(fused, phone, ts_ms, face_ok=True)
+        fused = _apply_alert_and_log(session, fused, frame=frame, feat=feat)
+        fused = _post_fusion(session, fused, phone, ts_ms, face_ok=True)
 
         # ── Debug extras ──────────────────────────────────────────────────
-        fused["ear_smooth"] = round(_fusion.ear_smooth, 3) if _fusion.ear_smooth is not None else None
-        fused["eyes_open_streak_ms"] = round(_fusion.eyes_open_streak_ms, 1)
-        fused["eye_closed_streak_ms"] = round(_fusion.eye_closed_streak_ms, 1)
-        fused["neck_recovered_streak_ms"] = round(_fusion.neck_recovered_streak_ms, 1)
+        fused["ear_smooth"] = round(fusion.ear_smooth, 3) if fusion.ear_smooth is not None else None
+        fused["eyes_open_streak_ms"] = round(fusion.eyes_open_streak_ms, 1)
+        fused["eye_closed_streak_ms"] = round(fusion.eye_closed_streak_ms, 1)
+        fused["neck_recovered_streak_ms"] = round(fusion.neck_recovered_streak_ms, 1)
 
         _watchdog.heartbeat()
 
@@ -682,7 +797,7 @@ def api_analyze():
                 except VideoOutputError as exc:
                     return jsonify({"ok": False, "error": str(exc)}), 400
             resp["annotated_frame"] = _encode_frame(annotated)
-        return jsonify(resp)
+        return _json_response(resp)
 
 
 @app.route("/api/analyze_lite", methods=["POST"])
@@ -706,7 +821,9 @@ def api_analyze_lite():
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
-    with _lock:
+    with _infer_lock:
+        session = _get_session(body)
+        fusion = session.fusion
         h, w = frame.shape[:2]
         ts_ms = time.time() * 1000.0
 
@@ -716,8 +833,9 @@ def api_analyze_lite():
             return jsonify({"ok": False, "error": f"MediaPipe: {exc}"}), 500
 
         feat = extract_features(result, w, h)
-        phone = _prepare_fusion_inputs(result, w, h, ts_ms)
-        veh = _driving_ctx.snapshot()
+        phone = _prepare_fusion_inputs(session, result, w, h, ts_ms)
+        veh = session.driving_context.snapshot()
+        alert_level = session.alert_manager.alert_level
 
         # ── Serialize landmarks (normalized 0-1 coords) ──────────────────
         face_lm = None
@@ -757,23 +875,24 @@ def api_analyze_lite():
             }
 
         if feat is None:
-            _fusion.touch(ts_ms)  # sync last_ts_ms — prevent stale-dt on next face
-            obstructed = _camera_obs.update(False, ts_ms)
-            return jsonify({
+            fusion.touch(ts_ms)  # sync last_ts_ms — prevent stale-dt on next face
+            obstructed = session.camera_obstruction.update(False, ts_ms)
+            return _json_response({
                 "ok":               True,
                 "face_found":       False,
-                "alarm_on":         _fusion.alarm_on,
-                "ema_prob":         round(_fusion.ema_prob or 0.0, 4),
+                "session_id":       session.session_id,
+                "alarm_on":         fusion.alarm_on,
+                "ema_prob":         round(fusion.ema_prob or 0.0, 4),
                 "neck_alarm":       False,
                 "eye_alarm":        False,
                 "yawn_alarm":       False,
-                "perclos":          round(_fusion.perclos_tracker.get_perclos(), 4),
-                "perclos_ratio":    round(_fusion.perclos_tracker.get_perclos(), 4),
-                "drowsiness_state": _fusion.scorer.get_state_name(),
+                "perclos":          round(fusion.perclos_tracker.get_perclos(), 4),
+                "perclos_ratio":    round(fusion.perclos_tracker.get_perclos(), 4),
+                "drowsiness_state": fusion.scorer.get_state_name(),
                 "drowsiness_score": 0.0,
-                "alert_level":      _alert_mgr.alert_level,
-                "alert_message":    ALERT_MESSAGES.get(_alert_mgr.alert_level, ""),
-                "channels":         channels_for_level(_alert_mgr.alert_level),
+                "alert_level":      alert_level,
+                "alert_message":    ALERT_MESSAGES.get(alert_level, ""),
+                "channels":         channels_for_level(alert_level),
                 "camera_obstructed": obstructed,
                 "looking_away":     False,
                 "phone_suspected":  phone.get("phone_suspected", False),
@@ -784,17 +903,17 @@ def api_analyze_lite():
                 "pose_landmarks":   pose_lm,
             })
 
-        fused = _fusion.update(
+        fused = fusion.update(
             feat, _mlp_model, _lstm_model,
             _mlp_scaler, _lstm_scaler,
             timestamp_ms=ts_ms,
         )
-        fused = _apply_alert_and_log(fused, frame=frame, feat=feat)
-        fused = _post_fusion(fused, phone, ts_ms, face_ok=True)
+        fused = _apply_alert_and_log(session, fused, frame=frame, feat=feat)
+        fused = _post_fusion(session, fused, phone, ts_ms, face_ok=True)
 
         _watchdog.heartbeat()
 
-        return jsonify({
+        return _json_response({
             "ok":       True,
             "face_found": True,
             "features": {k: (None if (isinstance(v, float) and v != v) else v)
@@ -806,14 +925,17 @@ def api_analyze_lite():
 
 
 @app.route("/api/metrics")
+@require_api_key
 def api_metrics():
     """SYS-04: CPU/RAM/(GPU)/uptime + trạng thái watchdog."""
+    session = _get_session()
     data = collect_metrics()
     data["watchdog"] = _watchdog.status()
     data["initialized"] = _initialized
-    data["inference_fps"] = round(_inference_fps, 1)
-    data["save_face_snapshots"] = _event_logger.save_face_snapshots
-    return jsonify({"ok": True, **data})
+    data["inference_fps"] = round(session.inference_fps, 1)
+    data["save_face_snapshots"] = _get_event_logger().save_face_snapshots
+    data["sessions"] = _sessions.stats()
+    return _json_response({"ok": True, **data})
 
 
 @app.route("/api/vehicle", methods=["GET", "POST"])
@@ -823,34 +945,46 @@ def api_vehicle():
         body = request.get_json(silent=True) or {}
         if "speed_kmh" not in body:
             return jsonify({"ok": False, "error": "Thiếu speed_kmh"}), 400
-        with _lock:
-            _driving_ctx.set_speed(float(body["speed_kmh"]))
-            snap = _driving_ctx.update()
-        return jsonify({"ok": True, **snap.__dict__})
-    with _lock:
-        snap = _driving_ctx.snapshot()
-    return jsonify({"ok": True, **snap.__dict__})
+        session = _get_session(body)
+        with _infer_lock:
+            session.driving_context.set_speed(float(body["speed_kmh"]))
+            snap = session.driving_context.update()
+        return _json_response({"ok": True, "session_id": session.session_id,
+                               **snap.__dict__})
+    session = _get_session()
+    with _infer_lock:
+        snap = session.driving_context.snapshot()
+    return _json_response({"ok": True, "session_id": session.session_id,
+                           **snap.__dict__})
 
 
 @app.route("/api/trip/summary")
+@require_api_key
 def api_trip_summary():
-    with _lock:
-        summary = _trip_memory.summary(
-            driving_time_sec=_driving_ctx.driving_time_sec
+    session = _get_session()
+    with _infer_lock:
+        summary = session.trip_memory.summary(
+            driving_time_sec=session.driving_context.driving_time_sec
         )
-    return jsonify({"ok": True, **summary})
+    return _json_response({"ok": True, "session_id": session.session_id, **summary})
 
 
 @app.route("/api/thresholds", methods=["GET", "PUT"])
 def api_thresholds():
     """HITL: GET/PUT runtime thresholds (Safety Engineer)."""
     if request.method == "GET":
-        return jsonify({
+        return _json_response({
             "ok": True,
             "thresholds": threshold_store.get_thresholds(),
             "defaults": threshold_store.get_defaults(),
             "audit": threshold_store.audit_log(),
         })
+    # H6: chỉ PUT mới cần key — GET để frontend đọc ngưỡng hiển thị (H5).
+    if not request_is_authorized():
+        return jsonify({
+            "ok": False,
+            "error": "Unauthorized — thiếu hoặc sai header X-API-Key.",
+        }), 401
     body = request.get_json(silent=True) or {}
     actor = body.pop("actor", "engineer")
     if body.get("reset"):
@@ -858,12 +992,14 @@ def api_thresholds():
     else:
         patch = body.get("thresholds", body)
         th = threshold_store.update_thresholds(patch, actor=actor)
-    with _lock:
+    with _infer_lock:
         _apply_runtime_thresholds()
-    return jsonify({"ok": True, "thresholds": th, "audit": threshold_store.audit_log()})
+    return _json_response({"ok": True, "thresholds": th,
+                           "audit": threshold_store.audit_log()})
 
 
 @app.route("/api/events")
+@require_api_key
 def api_events():
     """GET /api/events?driver_id=&date=&limit= — danh sách event log."""
     driver_id = request.args.get("driver_id") or None
@@ -872,20 +1008,24 @@ def api_events():
         limit = int(request.args.get("limit", 50))
     except ValueError:
         limit = 50
-    events = _event_logger.get_events(driver_id=driver_id, date=date, limit=limit)
-    return jsonify({"ok": True, "count": len(events), "events": events})
+    events = _get_event_logger().get_events(
+        driver_id=driver_id, date=date, limit=limit
+    )
+    return _json_response({"ok": True, "count": len(events), "events": events})
 
 
 @app.route("/api/events/<int:event_id>/snapshot")
+@require_api_key
 def api_event_snapshot(event_id: int):
     """Trả ảnh snapshot — chỉ có khi DEBUG SAVE_FACE_SNAPSHOTS=true."""
-    if not _event_logger.save_face_snapshots:
+    event_logger = _get_event_logger()
+    if not event_logger.save_face_snapshots:
         return jsonify({
             "ok": False,
             "error": "Privacy mode: face snapshots disabled (metadata-only).",
         }), 403
 
-    event = _event_logger.get_event(event_id)
+    event = event_logger.get_event(event_id)
     if event is None:
         return jsonify({"ok": False, "error": "Event không tồn tại."}), 404
     path = event.get("snapshot_path")
@@ -895,24 +1035,26 @@ def api_event_snapshot(event_id: int):
 
 
 @app.route("/api/events/sync", methods=["POST"])
+@require_api_key
 def api_events_sync():
     """
     Mock batch upload — metadata only (no face bytes / snapshot_path).
     """
+    event_logger = _get_event_logger()
     body = request.get_json(silent=True) or {}
     ids = body.get("event_ids")
     if ids:
-        pending = [_event_logger.get_event(int(i)) for i in ids]
+        pending = [event_logger.get_event(int(i)) for i in ids]
         pending = [e for e in pending if e]
-        updated = _event_logger.mark_uploaded([int(i) for i in ids])
+        updated = event_logger.mark_uploaded([int(i) for i in ids])
     else:
-        pending = _event_logger.get_pending_upload(limit=int(body.get("limit", 100)))
+        pending = event_logger.get_pending_upload(limit=int(body.get("limit", 100)))
         ids = [e["id"] for e in pending]
-        updated = _event_logger.mark_uploaded(ids)
+        updated = event_logger.mark_uploaded(ids)
 
-    payload = _event_logger.to_sync_payload(pending)
-    print(f"[events/sync] mock upload {updated} metadata events (no faces)")
-    return jsonify({
+    payload = event_logger.to_sync_payload(pending)
+    logger.info("[events/sync] mock upload %d metadata events (no faces)", updated)
+    return _json_response({
         "ok": True,
         "uploaded_count": updated,
         "event_ids": ids,
@@ -923,9 +1065,20 @@ def api_events_sync():
 
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
-    with _lock:
-        _session_reset()
-    return jsonify({"ok": True})
+    body = request.get_json(silent=True) or {}
+    session = _get_session(body)
+    with _infer_lock:
+        _session_reset(session)
+    return jsonify({"ok": True, "session_id": session.session_id})
+
+
+@app.errorhandler(413)
+def api_payload_too_large(_exc):
+    """M3: trả JSON thay vì trang HTML mặc định của Werkzeug."""
+    return jsonify({
+        "ok": False,
+        "error": f"Payload vượt giới hạn {MAX_UPLOAD_MB:g} MB.",
+    }), 413
 
 
 def main():

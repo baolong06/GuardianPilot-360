@@ -6,6 +6,8 @@ import math
 import numpy as np
 import cv2
 
+from .camera import get_camera_intrinsics
+
 # ── Landmark indices (MediaPipe FaceMesh 468/478 topology) ──────────────────
 LEFT_EYE_EAR_IDX  = [362, 385, 387, 263, 373, 380]
 RIGHT_EYE_EAR_IDX = [33, 160, 158, 133, 153, 144]
@@ -60,20 +62,29 @@ def compute_mouth_aspect(pts):
     return vertical, horizontal, aspect
 
 
-def compute_head_pose(pts_px, img_w, img_h):
-    """Trả về (pitch, yaw, roll) theo độ, hoặc None nếu solvePnP thất bại."""
+def compute_head_pose(pts_px, img_w, img_h, intrinsics=None):
+    """
+    Trả về (pitch, yaw, roll) theo độ, hoặc None nếu solvePnP thất bại.
+
+    M9: thông số camera lấy từ `src.camera.get_camera_intrinsics()`. Khi chưa
+    calib (mặc định) hàm đó trả về đúng giả định cũ — focal = img_w, tâm ảnh là
+    principal point, không méo — nên kết quả KHÔNG đổi so với trước.
+    Hệ quả của việc chưa calib: pitch/yaw/roll là góc TƯƠNG ĐỐI, chỉ nên dùng
+    qua delta-so-với-baseline. Xem docs/CAMERA_CALIBRATION.md.
+
+    Args:
+        intrinsics: CameraIntrinsics tuỳ chọn (dùng để test / ép giá trị).
+    """
     image_points = np.array(
         [pts_px[HEADPOSE_IDX[k]] for k in
          ("nose_tip", "chin", "left_eye_corner", "right_eye_corner",
           "left_mouth", "right_mouth")],
         dtype=np.float64,
     )
-    focal_length = float(img_w)
-    cx, cy = img_w / 2.0, img_h / 2.0
-    cam_mat = np.array([[focal_length, 0, cx],
-                        [0, focal_length, cy],
-                        [0, 0,           1.0]], dtype=np.float64)
-    dist_coef = np.zeros((4, 1))
+    if intrinsics is None:
+        intrinsics = get_camera_intrinsics(img_w, img_h)
+    cam_mat = intrinsics.camera_matrix
+    dist_coef = intrinsics.dist_coeffs
     ok, rvec, _ = cv2.solvePnP(
         MODEL_3D_POINTS, image_points, cam_mat, dist_coef,
         flags=cv2.SOLVEPNP_ITERATIVE,

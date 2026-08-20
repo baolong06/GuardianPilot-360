@@ -3,12 +3,20 @@ __pycache__/
 *.pyo
 .env
 .venv/
+venv/
 
 # Large model files (track only via README)
-models/*.keras
-models/*.pkl
-models/*.task
+# M8: pattern cũ `models/*.keras` KHÔNG khớp models/compatible/*.keras — các
+# artifact trong thư mục con vì thế đã lọt vào git. Dùng `**` để bao thư mục con.
+# LƯU Ý: 7 file trong models/compatible/ hiện ĐANG được track. Pattern này chỉ
+# ngăn file MỚI; gỡ file cũ khỏi index (`git rm --cached`) là quyết định riêng
+# vì app cần chúng để chạy — xem Report.md.
+models/**/*.keras
+models/**/*.pkl
+models/**/*.task
+models/**/*.h5
 models/**/*.weights.h5
+models/**/*.onnx
 results/*.keras
 results/*.pkl
 results/*.task
@@ -26,6 +34,7 @@ nb_out.txt
 
 # Build / cache
 *.log
+.pytest_cache/
 results/__huggingface_repos__.json
 
 # Runtime event log / snapshots

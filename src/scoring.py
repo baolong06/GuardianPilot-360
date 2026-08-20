@@ -37,7 +37,12 @@ class DrowsinessScorer:
     Output: DriverState (0-4) + drowsiness_score (0.0-1.0)
     """
     
-    # Ngưỡng chuyển state (hysteresis giữa ON/OFF)
+    # Ngưỡng chuyển state mặc định (hysteresis giữa ON/OFF).
+    #
+    # H3: đây là CLASS attribute, chỉ dùng làm giá trị khởi tạo. Mỗi instance
+    # copy sang `self.thresholds` trong __init__ và chỉ đọc/ghi bản copy đó.
+    # Trước đây app.py ghi thẳng vào dict này → mọi instance (kể cả instance
+    # tạo sau reset, và các test chạy chung process) đều bị đổi ngưỡng theo.
     THRESHOLDS = {
         # (threshold_on, threshold_off)
         DriverState.FATIGUE: (0.40, 0.35),      # Mệt mỏi nhẹ
@@ -62,10 +67,25 @@ class DrowsinessScorer:
         self.current_state = DriverState.NORMAL
         self.state_entered_at_ms: float = 0.0
         self.last_update_ms: float = 0.0
-        
+
         # Tracking recovery: thời gian ở state cao mà không giảm xuống
         self.time_in_high_state_ms: float = 0.0
-    
+
+        # H3: bản copy per-instance của ngưỡng — sửa runtime không rò rỉ ra
+        # class attribute (và do đó không rò rỉ sang instance/test khác).
+        self.thresholds: dict[DriverState, tuple[float, float]] = {
+            state: tuple(values) for state, values in self.THRESHOLDS.items()
+        }
+
+    def set_threshold(self, state: DriverState, on: float, off: float) -> None:
+        """HITL: đổi ngưỡng ON/OFF của một state cho RIÊNG instance này."""
+        on = max(0.0, min(1.0, float(on)))
+        off = max(0.0, min(on, float(off)))
+        self.thresholds[state] = (on, off)
+
+    def get_thresholds(self) -> dict[str, tuple[float, float]]:
+        return {state.name: values for state, values in self.thresholds.items()}
+
     def update(
         self,
         timestamp_ms: float,
@@ -109,7 +129,7 @@ class DrowsinessScorer:
         if self.current_state in (
             DriverState.DROWSY, DriverState.MICROSLEEP, DriverState.CRITICAL
         ):
-            if score >= self.THRESHOLDS[DriverState.DROWSY][0]:
+            if score >= self.thresholds[DriverState.DROWSY][0]:
                 self.time_in_high_state_ms += dt_ms
             else:
                 self.time_in_high_state_ms = 0.0
@@ -211,44 +231,44 @@ class DrowsinessScorer:
         if current == DriverState.CRITICAL:
             if score < 0.30:
                 return DriverState.NORMAL
-            _, drowsy_off = self.THRESHOLDS[DriverState.DROWSY]
+            _, drowsy_off = self.thresholds[DriverState.DROWSY]
             if score < drowsy_off:
                 return DriverState.DROWSY
             return current  # sticky CRITICAL cho đến khi phục hồi thật
 
         if current == DriverState.MICROSLEEP:
-            _, th_off = self.THRESHOLDS[DriverState.MICROSLEEP]
+            _, th_off = self.thresholds[DriverState.MICROSLEEP]
             if score < th_off:
                 return DriverState.DROWSY
 
         if current == DriverState.DROWSY:
-            _, th_off = self.THRESHOLDS[DriverState.DROWSY]
+            _, th_off = self.thresholds[DriverState.DROWSY]
             if score < th_off:
                 return DriverState.FATIGUE
 
         if current == DriverState.FATIGUE:
-            _, th_off = self.THRESHOLDS[DriverState.FATIGUE]
+            _, th_off = self.thresholds[DriverState.FATIGUE]
             if score < th_off:
                 return DriverState.NORMAL
         
         # Check từ thấp lên cao (degradation)
         if current == DriverState.NORMAL:
-            th_on, _ = self.THRESHOLDS[DriverState.FATIGUE]
+            th_on, _ = self.thresholds[DriverState.FATIGUE]
             if score >= th_on:
                 return DriverState.FATIGUE
         
         if current == DriverState.FATIGUE:
-            th_on, _ = self.THRESHOLDS[DriverState.DROWSY]
+            th_on, _ = self.thresholds[DriverState.DROWSY]
             if score >= th_on:
                 return DriverState.DROWSY
         
         if current == DriverState.DROWSY:
-            th_on, _ = self.THRESHOLDS[DriverState.MICROSLEEP]
+            th_on, _ = self.thresholds[DriverState.MICROSLEEP]
             if score >= th_on:
                 return DriverState.MICROSLEEP
         
         if current == DriverState.MICROSLEEP:
-            th_on, _ = self.THRESHOLDS[DriverState.CRITICAL]
+            th_on, _ = self.thresholds[DriverState.CRITICAL]
             if score >= th_on:
                 return DriverState.CRITICAL
         

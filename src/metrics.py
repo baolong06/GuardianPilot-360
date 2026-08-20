@@ -151,7 +151,10 @@ class InferenceWatchdog:
             if not armed:
                 continue
             if age > self.stale_sec:
-                self._stale_count += 1
+                # M5: đọc/ghi bộ đếm phải nằm trong lock — status() đọc nó
+                # dưới lock, còn ở đây trước kia tăng ngoài lock.
+                with self._lock:
+                    self._stale_count += 1
                 logger.warning(
                     "Watchdog: no inference for %.1fs (threshold %.1fs) — stale #%d",
                     age,

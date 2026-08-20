@@ -21,11 +21,17 @@ class PERCLOSTracker:
     Window: 30 giây (theo chuẩn PERCLOS P80 trong nghiên cứu drowsiness)
     """
     
-    def __init__(self, window_sec: float = 30.0, eye_closed_threshold: float = 0.18):
+    def __init__(self, window_sec: float = 30.0, eye_closed_threshold: float = 0.16):
         """
         Args:
             window_sec: Độ dài rolling window (giây), mặc định 30s
-            eye_closed_threshold: Ngưỡng EAR để coi là mắt nhắm
+            eye_closed_threshold: Ngưỡng EAR để coi là mắt nhắm.
+
+        H5: mặc định là 0.16 cho khớp `fusion.EYE_CLOSED_THRESH` và
+        `thresholds._DEFAULTS["eye_closed_thresh"]`. Trước đây default ở đây là
+        0.18 trong khi FusionState luôn khởi tạo tracker với 0.16 — hai con số
+        khác nhau cho cùng một khái niệm "mắt nhắm" là nguồn nhầm lẫn.
+        Ngưỡng hiệu lực khi chạy thật KHÔNG đổi (vẫn 0.16).
         """
         self.window_ms = window_sec * 1000.0
         self.eye_closed_threshold = eye_closed_threshold

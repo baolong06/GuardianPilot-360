@@ -4,6 +4,9 @@ import cv2
 import base64
 import requests
 import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def img_to_b64(path, max_w=640):
@@ -19,7 +22,8 @@ def img_to_b64(path, max_w=640):
 
 
 # Test với ảnh gốc ở các kích thước khác nhau
-src = r"e:\KhoiNghiep\GuardianPilot\data\_test_imgs\realistic_open.jpg"
+# M1: path tương đối so với repo thay vì ổ đĩa của một máy cá nhân.
+src = str(ROOT / "data" / "_test_imgs" / "realistic_open.jpg")
 img_full = cv2.imread(src)
 print(f"Original: {img_full.shape}")
 

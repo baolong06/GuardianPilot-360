@@ -24,6 +24,11 @@ let running = false;
 let pendingFrame = null;      // frame mới nhất đang chờ xử lý
 let processing  = false;      // đang trong 1 inference call
 
+// H2: worker PHẢI dùng cùng session_id với main thread, nếu không server sẽ
+// tạo hai session riêng và vòng lặp live chạy trên state khác với các request
+// từ main thread (init / reset / video).
+let sessionId = 'default';
+
 // Interval loop — polling pendingFrame (mặc định 100ms, edge profile: 200ms)
 let INFERENCE_INTERVAL_MS = 100;
 
@@ -43,8 +48,11 @@ function startLoop() {
     try {
       const res = await fetch(WORKER_API_BASE + '/api/analyze_lite', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: dataUrl }),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': sessionId,
+        },
+        body: JSON.stringify({ image: dataUrl, session_id: sessionId }),
       });
 
       if (!res.ok) {
@@ -86,6 +94,7 @@ self.onmessage = (e) => {
 
   if (msg.type === 'start') {
     running = true;
+    if (msg.sessionId) sessionId = msg.sessionId;
     if (msg.profile && msg.profile.inference_interval_ms) {
       INFERENCE_INTERVAL_MS = msg.profile.inference_interval_ms;
     }

@@ -322,10 +322,9 @@ def run_holistic(
     # and requires all frames to have the same dimensions. Mixing 640x480 webcam
     # frames with 320x240 lite-mode frames causes
     # "current_mat->rows == previous_mat->rows (600 vs 240)" crash.
-    # Solution: resize every frame to MEDIAPIPE_INPUT_SIZE before inference,
-    # then scale landmarks back to original image coords.
-    scale_x = img_w / MEDIAPIPE_INPUT_WIDTH
-    scale_y = img_h / MEDIAPIPE_INPUT_HEIGHT
+    # Solution: resize every frame to MEDIAPIPE_INPUT_SIZE before inference.
+    # Landmark trả về là toạ độ normalized [0,1] nên KHÔNG cần scale ngược —
+    # nhân với img_w/img_h gốc là ra pixel đúng.
     rgb = np.ascontiguousarray(frame_bgr[:, :, ::-1])
     if (img_w, img_h) != MEDIAPIPE_INPUT_SIZE:
         rgb_resized = cv2.resize(rgb, MEDIAPIPE_INPUT_SIZE,
@@ -392,13 +391,23 @@ def run_holistic(
             pose_lm = pose_landmarks_list[i]
 
         bbox = _estimate_face_bbox(face_lm, img_w, img_h)
+        if bbox is None:
+            # M4: _estimate_face_bbox trả None khi danh sách landmark rỗng.
+            # Trước đây giá trị này đi thẳng vào _score_person và nổ TypeError
+            # lúc unpack, thay vì được coi là "không có mặt".
+            continue
         # Truyền n_faces để _score_person chọn threshold phù hợp
         # (single-person → relaxed, multi-person → strict).
         score, info = _score_person(bbox, pose_lm, img_w, img_h,
                                     n_faces_total=n_faces)
         info["idx"] = i
         scored.append((score, info))
-    
+
+    if not scored:
+        if return_debug:
+            return None, debug
+        return None
+
     # Sort by score descending
     scored.sort(key=lambda x: x[0], reverse=True)
     debug.face_scores = [{"score": s, **c} for s, c in scored]
@@ -428,63 +437,19 @@ def run_holistic(
     debug.primary_idx = primary_idx
     debug.distant_fallback = primary_info.get("distant", False)
     
-    # ── Step 4: Nếu có nhiều hơn 1 person, crop & re-run ───────────────────
-    if n_faces > 1:
-        # Crop vùng primary person. primary_bbox is in original image coords,
-        # but we need to crop from rgb_resized (MediaPipe input size).
-        primary_bbox = primary_info["face_bbox"]
-        # Scale bbox from original coords → MediaPipe input coords
-        sx_b = primary_bbox[0] / scale_x
-        sy_b = primary_bbox[1] / scale_y
-        sx_b2 = primary_bbox[2] / scale_x
-        sy_b2 = primary_bbox[3] / scale_y
-        crop_x, crop_y, crop_x2, crop_y2 = _expand_crop(
-            sx_b, sy_b, sx_b2, sy_b2,
-            MEDIAPIPE_INPUT_WIDTH, MEDIAPIPE_INPUT_HEIGHT, margin=0.25
-        )
-        debug.crop_region = (crop_x, crop_y, crop_x2, crop_y2)
+    # ── Step 4: Dựng kết quả ────────────────────────────────────────────────
+    # H1: trước đây ở đây có nhánh `if n_faces > 1:` crop lại vùng primary rồi
+    # chạy detect() lần hai. Nhánh đó KHÔNG BAO GIỜ chạy được:
+    #   - HolisticLandmarker (Tasks API) chỉ trả về MỘT khuôn mặt, và Step 1
+    #     gói nó thành `[flat_face]` → len(face_landmarks_list) luôn <= 1;
+    #   - mp.solutions.holistic (đường fallback) cũng chỉ trả một khuôn mặt.
+    # Ngoài ra nhánh đó còn gọi `holistic.detect(...)` trong khi biến `holistic`
+    # chỉ tồn tại ở đường .task — đi qua đường fallback là NameError.
+    # Đã gỡ. Việc chấm điểm/chọn primary ở Step 2-3 vẫn giữ nguyên vì nó cung
+    # cấp debug info và cổng lọc mặt quá nhỏ.
+    debug.crop_region = None
+    out_result = TransformedResult(face_landmarks_list, pose_landmarks_list, debug)
 
-        crop_w_mp = crop_x2 - crop_x
-        crop_h_mp = crop_y2 - crop_y
-
-        # Crop from resized RGB
-        cropped_rgb = rgb_resized[crop_y:crop_y2, crop_x:crop_x2]
-        cropped_mp = mp.Image(
-            image_format=mp.ImageFormat.SRGB,
-            data=cropped_rgb
-        )
-
-        # Re-run holistic on cropped
-        cropped_result = holistic.detect(cropped_mp)
-
-        # Transform landmarks from MediaPipe input coords → original image coords
-        # Note: pass original img_w, img_h so _transform_landmarks uses correct
-        # scale factors (crop_w * scale_x = original pixel size).
-        transformed_face = []
-        if cropped_result.face_landmarks:
-            transformed_face = _transform_landmarks(
-                cropped_result.face_landmarks[0],
-                crop_x * scale_x, crop_y * scale_y,
-                crop_w_mp * scale_x, crop_h_mp * scale_y,
-                img_w, img_h
-            )
-
-        transformed_pose = []
-        if cropped_result.pose_landmarks:
-            transformed_pose = _transform_landmarks(
-                cropped_result.pose_landmarks[0],
-                crop_x * scale_x, crop_y * scale_y,
-                crop_w_mp * scale_x, crop_h_mp * scale_y,
-                img_w, img_h
-            )
-
-        out_result = TransformedResult([transformed_face], [transformed_pose], debug)
-
-    else:
-        # Chỉ 1 person, dùng trực tiếp
-        debug.crop_region = None
-        out_result = TransformedResult(face_landmarks_list, pose_landmarks_list, debug)
-    
     if return_debug:
         return out_result, debug
     return out_result

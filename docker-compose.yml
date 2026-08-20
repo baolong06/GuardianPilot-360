@@ -8,6 +8,22 @@ services:
       - ALLOW_RULE_ONLY_MODE=true
       # edge = tiết kiệm CPU/RAM (5 FPS infer, tắt LSTM, 256×192)
       # - EDGE_PROFILE=edge
+      #
+      # H6 — bật auth cho endpoint chứa dữ liệu tài xế (/api/events,
+      # /api/trip/summary, /api/metrics, PUT /api/thresholds).
+      # BẮT BUỘC set khi expose ra ngoài localhost.
+      # - GUARDIANPILOT_API_KEY=doi-gia-tri-nay
+      #
+      # C4 — bỏ qua MLP/LSTM, chạy thuần rule engine (xem
+      # reports/model_calibration.md để biết vì sao có thể muốn làm vậy).
+      # - FORCE_RULE_ONLY=true
+      #
+      # M3 — giới hạn kích thước ảnh upload (MB).
+      # - MAX_UPLOAD_MB=12
+      #
+      # M9 — camera intrinsics thật, xem docs/CAMERA_CALIBRATION.md.
+      # - CAMERA_FOCAL_X=638.2
+      # - CAMERA_CX=319.5
     volumes:
       - ./data:/app/data
       - ./models:/app/models:ro

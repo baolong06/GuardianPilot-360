@@ -1,12 +1,20 @@
-"""Phân tích video: trích neck_tilt + EAR + alarm signal theo từng frame."""
-import cv2
-import numpy as np
+"""Phân tích video: trích neck_tilt + EAR + alarm signal theo từng frame.
+
+M1: bo hard-code "E:/KhoiNghiep/GuardianPilot"; dung path tuong doi + argparse.
+
+Usage:
+  python results/analyze_video.py --video path/to/video.mp4       [--out results/video_nod_analysis.csv]
+"""
+import argparse
+import csv
 import math
 import sys
-import csv
 from pathlib import Path
 
-ROOT = Path(r"E:/KhoiNghiep/GuardianPilot")
+import cv2
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.landmarks import extract_features
@@ -14,9 +22,30 @@ from src.landmarks import extract_features
 # Import pipeline (holistic + ROI)
 from src.pipeline import run_holistic
 
-VIDEO = r"E:/KhoiNghiep/GuardianPilot/Drowsiness Detection - Google Chrome 2026-07-30 05-48-18.mp4"
-OUT_CSV = r"E:/KhoiNghiep/GuardianPilot/results/video_nod_analysis.csv"
-MODEL_PATH = r"E:/KhoiNghiep/GuardianPilot/models/holistic_landmarker.task"
+
+def _resolve_model() -> str:
+    """Tim holistic_landmarker.task theo dung thu tu uu tien ma app.py dung."""
+    from src.model_loader import model_search_roots, resolve_artifact
+    found = resolve_artifact("holistic_landmarker.task", model_search_roots(ROOT))
+    if found is None:
+        raise SystemExit(
+            "Khong tim thay holistic_landmarker.task. "
+            "Chay: python tools/convert_models.py --in-place"
+        )
+    return str(found)
+
+
+_parser = argparse.ArgumentParser(description="Phan tich neck_tilt/EAR tren video")
+_parser.add_argument("--video", type=Path, required=True)
+_parser.add_argument("--out", type=Path,
+                     default=ROOT / "results" / "video_nod_analysis.csv")
+_args = _parser.parse_args()
+if not _args.video.is_file():
+    raise SystemExit(f"Khong tim thay video: {_args.video}")
+
+VIDEO = str(_args.video)
+OUT_CSV = str(_args.out)
+MODEL_PATH = _resolve_model()
 
 cap = cv2.VideoCapture(VIDEO)
 fps = cap.get(cv2.CAP_PROP_FPS)
@@ -25,7 +54,7 @@ w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 print(f"FPS={fps:.2f}  total={total}  {w}x{h}  duration={total/fps:.1f}s")
 
-Path(r"E:/KhoiNghiep/GuardianPilot/results").mkdir(parents=True, exist_ok=True)
+Path(OUT_CSV).parent.mkdir(parents=True, exist_ok=True)
 
 neck_vals = []
 ear_vals = []

@@ -29,6 +29,7 @@ class _VideoSession:
     width: int
     height: int
     fps: float
+    codec: str = "mp4v"
     frame_count: int = 0
     complete: bool = False
     updated_at: float = 0.0
@@ -39,6 +40,12 @@ class VideoOutputStore:
 
     MAX_ACTIVE_SESSIONS = 4
     STALE_SESSION_SEC = 300.0
+
+    # M10: thử H.264 trước — `mp4v` (MPEG-4 Part 2) tạo được file .mp4 nhưng
+    # Chrome/Firefox/Safari KHÔNG phát được inline, người dùng tải về rồi mở
+    # bằng trình xem ngoài mới thấy. `avc1` phát trực tiếp trên trình duyệt.
+    # OpenCV chỉ có avc1 khi build kèm openh264/FFmpeg → phải có fallback.
+    CODEC_PREFERENCE = ("avc1", "mp4v")
 
     def __init__(
         self,
@@ -82,11 +89,8 @@ class VideoOutputStore:
             if path.parent != self.output_dir:
                 raise VideoOutputError("Invalid output path.")
 
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = self._writer_factory(str(path), fourcc, fps, (width, height))
-            if not writer or not writer.isOpened():
-                if writer:
-                    writer.release()
+            writer, codec = self._open_writer(path, fps, width, height)
+            if writer is None:
                 raise VideoOutputError(
                     "Cannot create MP4 output. Check that OpenCV has video codec support."
                 )
@@ -99,10 +103,27 @@ class VideoOutputStore:
                 width=width,
                 height=height,
                 fps=fps,
+                codec=codec,
                 updated_at=time.monotonic(),
             )
             self._sessions[output_id] = session
             return self._as_dict(session)
+
+    def _open_writer(
+        self, path: Path, fps: float, width: int, height: int
+    ) -> tuple[Any | None, str]:
+        """Mở VideoWriter với codec tốt nhất khả dụng (M10)."""
+        for codec in self.CODEC_PREFERENCE:
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                writer = self._writer_factory(str(path), fourcc, fps, (width, height))
+            except Exception:  # noqa: BLE001 — codec không có trên build này
+                continue
+            if writer and writer.isOpened():
+                return writer, codec
+            if writer:
+                writer.release()
+        return None, ""
 
     def append(self, output_id: str, frame: np.ndarray) -> int:
         with self._lock:
@@ -171,6 +192,7 @@ class VideoOutputStore:
             "width": session.width,
             "height": session.height,
             "fps": session.fps,
+            "codec": session.codec,
             "frame_count": session.frame_count,
             "complete": session.complete,
         }

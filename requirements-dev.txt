@@ -1,1 +1,8 @@
+# Dev/test-only dependencies. Cài kèm requirements.txt:
+#   .venv\Scripts\python -m pip install -r requirements.txt -r requirements-dev.txt
 pytest==8.3.2
+
+# M7: `requests` được import bởi 6 script trong tools/ (diagnose_*.py,
+# quick_test.py, test_distance.py, debug_face.py …) nhưng trước đây không được
+# khai báo ở bất kỳ file requirements nào → ImportError trên môi trường sạch.
+requests==2.32.3

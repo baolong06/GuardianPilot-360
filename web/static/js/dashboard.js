@@ -1,5 +1,31 @@
 'use strict';
 
+// ── API key (H6) ───────────────────────────────────────────────────────────
+// Khi server đặt env GUARDIANPILOT_API_KEY, các endpoint chứa dữ liệu tài xế
+// (/api/events, /api/trip/summary, /api/metrics) yêu cầu header X-API-Key.
+// Dashboard đọc key từ localStorage — người quản lý đặt một lần bằng:
+//     localStorage.setItem('gp_api_key', '<key>')
+// Server không bật auth → không set gì cả, mọi thứ chạy như cũ.
+function apiHeaders(extra) {
+  const headers = Object.assign({}, extra || {});
+  let key = null;
+  try { key = localStorage.getItem('gp_api_key'); } catch (_) { /* private mode */ }
+  if (key) headers['X-API-Key'] = key;
+  return headers;
+}
+
+/** fetch() kèm API key; báo lỗi rõ ràng khi bị 401. */
+async function apiFetch(url, options) {
+  const opts = Object.assign({}, options || {});
+  opts.headers = apiHeaders(opts.headers);
+  const res = await fetch(url, opts);
+  if (res.status === 401) {
+    console.warn('[dashboard] 401 — cần API key. Đặt bằng: ' +
+                 "localStorage.setItem('gp_api_key', '<key>')");
+  }
+  return res;
+}
+
 // ── DOM Refs ──────────────────────────────────────────────────────────────
 const btnRefresh         = document.getElementById('btnRefresh');
 const statActiveVehicles = document.getElementById('statActiveVehicles');
@@ -71,8 +97,8 @@ async function loadDashboardData() {
     if (dateVal)  url += `&date=${encodeURIComponent(dateVal)}`;
 
     const [eventsRes, tripRes] = await Promise.all([
-      fetch(url),
-      fetch('/api/trip/summary').catch(() => null),
+      apiFetch(url),
+      apiFetch('/api/trip/summary').catch(() => null),
     ]);
 
     const eventsData = await eventsRes.json();
@@ -179,7 +205,7 @@ window.viewEventDetail = function(eventId) {
 
   // Load snapshot image if present
   if (ev.snapshot_path) {
-    fetch(`/api/events/${ev.id}/snapshot`)
+    apiFetch(`/api/events/${ev.id}/snapshot`)
       .then(res => {
         if (res.ok) return res.blob();
         throw new Error('No snapshot');

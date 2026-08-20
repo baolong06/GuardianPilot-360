@@ -1,12 +1,33 @@
-# Pinned for reproducible installs (L14). Compatible ranges kept only where
-# platform wheels differ (TF/MediaPipe). Prefer exact pins for app deps.
+# Runtime dependencies — pinned for reproducible installs (L14).
+#
+# RÀNG BUỘC PHIÊN BẢN PYTHON (C1): 3.9 – 3.12.
+#   mediapipe 0.10.14 và tensorflow 2.17 KHÔNG có wheel cho Python 3.13/3.14.
+#   Trên máy có Python mới hơn, tạo venv riêng:
+#       py -3.11 -m venv .venv
+#       .venv\Scripts\python -m pip install -r requirements.txt -r requirements-dev.txt
+#   Kiểm tra bằng: python tools/check_env.py
+#
+# numpy PHẢI < 2: mediapipe 0.10.14 build với numpy 1.x ABI.
 flask==3.1.3
 opencv-python==4.10.0.84
 mediapipe==0.10.14
 numpy==1.26.4
-pandas==2.2.2
-scikit-learn==1.5.1
+scikit-learn==1.6.1
 joblib==1.4.2
 psutil==6.0.0
 tensorflow==2.17.0
 keras==3.5.0
+
+# Ghi chú phiên bản:
+#   scikit-learn 1.6.1 — các file scaler trong models/compatible/*.pkl được
+#   pickle bằng đúng 1.6.1. Ghim 1.5.1 (giá trị cũ) làm sklearn cảnh báo
+#   InconsistentVersionWarning "may lead to invalid results" khi unpickle.
+#
+#   pandas đã được GỠ: chỗ duy nhất dùng nó là ffill/bfill cho cửa sổ LSTM
+#   trong src/fusion.py, nay thay bằng numpy (_ffill_bfill).
+#
+#   pytest đã chuyển sang requirements-dev.txt (không phải dependency runtime).
+#
+# Tuỳ chọn, KHÔNG bắt buộc (code đã guard bằng try/except):
+#   pynvml    — thêm chỉ số GPU vào /api/metrics
+#   tf2onnx   — cần cho tools/export_onnx.py

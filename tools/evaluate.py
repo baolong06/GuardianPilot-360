@@ -5,7 +5,10 @@ MVP: tính các chỉ số cơ bản từ CSV nhãn + prediction JSON.
 Chưa thay thế benchmark đầy đủ mục 9.2; dùng để theo dõi khi có dataset.
 
 Usage:
-  python tools/evaluate.py --labels data/labels.csv --preds data/preds.csv --out reports/eval.md
+  python tools/evaluate.py --csv data/preds.csv --out reports/eval.md
+
+CSV cần 2 cột: `label,pred` (0/1). L5: docstring cũ ghi `--labels/--preds` —
+đó là hai flag KHÔNG tồn tại; CLI thật chỉ có `--csv`, `--out`, `--title`.
 """
 from __future__ import annotations
 

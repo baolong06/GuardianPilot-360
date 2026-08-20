@@ -4,6 +4,33 @@
 // Empty string = same-origin relative URL works correctly inside a Worker.
 const WORKER_API_BASE = '';
 
+// ── Session ID (H2) ────────────────────────────────────────────────────────
+// Server giữ FusionState/AlertManager/TripMemory riêng cho từng session_id.
+// Trước đây mọi tab dùng chung một state toàn cục: mở hai tab là hai luồng
+// nhận diện trộn vào nhau, và "Đặt lại" ở tab này xoá state của tab kia.
+//
+// Lưu trong sessionStorage → mỗi tab một id, F5 vẫn giữ nguyên phiên.
+const SESSION_ID = (() => {
+  const KEY = 'guardian_session_id';
+  let id = sessionStorage.getItem(KEY);
+  if (!id) {
+    id = (crypto.randomUUID
+      ? crypto.randomUUID()
+      : 'sess-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
+    ).replace(/[^a-zA-Z0-9_.-]/g, '');
+    sessionStorage.setItem(KEY, id);
+  }
+  return id;
+})();
+
+/** Header chuẩn cho mọi request tới API (JSON + session). */
+function sessionHeaders(extra) {
+  return Object.assign(
+    { 'Content-Type': 'application/json', 'X-Session-Id': SESSION_ID },
+    extra || {},
+  );
+}
+
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const btnInit          = document.getElementById('btnInit');
 const systemBadge      = document.getElementById('systemBadge');
@@ -236,11 +263,17 @@ let runtimeProfile = {
 
 async function loadRuntimeProfile() {
   try {
-    const res = await fetch('/api/runtime-profile');
+    const res = await fetch('/api/runtime-profile', { headers: sessionHeaders() });
     const data = await res.json();
     if (data.ok) {
       runtimeProfile = data;
-      console.log('[Profile]', data.profile, data.description);
+      // H5: ngưỡng "mắt nhắm" lấy từ server thay vì hằng số cứng trong file này.
+      // Trước đây UI dùng 0.20 còn backend dùng 0.16 → hai bên báo khác nhau.
+      if (typeof data.eye_closed_thresh === 'number') {
+        earClosedThreshold = data.eye_closed_thresh;
+      }
+      console.log('[Profile]', data.profile, data.description,
+                  'EAR<' + earClosedThreshold);
     }
   } catch (_) { /* giữ default */ }
 }
@@ -257,11 +290,14 @@ let inferenceFrameCount = 0;
 let fpsLastTime        = performance.now();
 
 // Alert latency tracking
-let eyeClosedAt        = null;   // timestamp (ms) khi EAR mulai rendah
+let eyeClosedAt        = null;   // timestamp (ms) khi EAR tụt xuống dưới ngưỡng
 let alertLatencyMs     = null;
 
-// EAR threshold để phát hiện mắt nhắm
-const EAR_CLOSED_THRESHOLD = 0.20;
+// EAR threshold để phát hiện mắt nhắm.
+// H5: chỉ là giá trị khởi tạo — loadRuntimeProfile() ghi đè bằng giá trị thật
+// của server (/api/runtime-profile → eye_closed_thresh) để UI và backend luôn
+// nói cùng một con số.
+let earClosedThreshold = 0.16;
 
 // Canvas 2D context cache
 let annotatedCtx = null;
@@ -289,7 +325,11 @@ btnInit.addEventListener('click', async () => {
   btnInit.disabled = true;
   await loadRuntimeProfile();
   try {
-    const res = await fetch('/api/init', { method: 'POST' });
+    const res = await fetch('/api/init', {
+      method: 'POST',
+      headers: sessionHeaders(),
+      body: JSON.stringify({}),
+    });
     const data = await res.json();
     if (data.ok) {
       initialized = true;
@@ -377,7 +417,11 @@ function startLive() {
   inferenceWorker = new Worker('/static/js/worker.js');
   inferenceWorker.onmessage = onWorkerMessage;
   inferenceWorker.onerror   = (e) => console.error('[Worker error]', e);
-  inferenceWorker.postMessage({ type: 'start', profile: runtimeProfile });
+  inferenceWorker.postMessage({
+    type: 'start',
+    profile: runtimeProfile,
+    sessionId: SESSION_ID,   // H2: worker phải gửi cùng session với main thread
+  });
 
   // ── Start Display Loop via requestAnimationFrame ──
   startDisplayLoop();
@@ -524,7 +568,7 @@ function onWorkerMessage(e) {
     // Track how long from eye closure to alarm trigger
     const ear = data.features?.ear_avg;
     if (ear != null) {
-      if (ear < EAR_CLOSED_THRESHOLD) {
+      if (ear < earClosedThreshold) {
         // Eyes closed
         if (eyeClosedAt === null) eyeClosedAt = msg.timestamp;
       } else {
@@ -995,7 +1039,11 @@ async function runVideoAnalysis(width, height, fps) {
   videoElapsed.textContent = `00:00 / ${formatTime(duration)}`;
   videoProcessingState.textContent = 'Đang khởi tạo pipeline…';
 
-  const resetResponse = await fetch('/api/reset', { method: 'POST' });
+  const resetResponse = await fetch('/api/reset', {
+    method: 'POST',
+    headers: sessionHeaders(),
+    body: JSON.stringify({}),
+  });
   if (!resetResponse.ok) {
     processingError = new Error('Không reset được trạng thái nhận diện.');
   }
@@ -1098,7 +1146,7 @@ function getVideoAnalysisDimensions() {
 async function startVideoOutput(width, height, fps) {
   const response = await fetch('/api/video-output/start', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: sessionHeaders(),
     body: JSON.stringify({ filename: selectedVideoFile.name, width, height, fps }),
   });
   const data = await response.json();
@@ -1110,6 +1158,7 @@ async function finishVideoOutput(outputId) {
   if (!outputId) return null;
   const response = await fetch(`/api/video-output/${encodeURIComponent(outputId)}/finish`, {
     method: 'POST',
+    headers: sessionHeaders(),
   });
   const data = await response.json();
   if (!response.ok || !data.ok) throw new Error(data.error || 'Không đóng được video output.');
@@ -1169,7 +1218,7 @@ async function callAnalyze(dataUrl, resetState = false, annotate = false, option
   try {
     const res = await fetch('/api/analyze', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: sessionHeaders(),
       body: JSON.stringify({
         image: dataUrl,
         reset_state: resetState,

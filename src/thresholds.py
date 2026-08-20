@@ -8,9 +8,16 @@ import time
 from typing import Any
 
 
-# Defaults mirror fusion/scoring/looking_away constants
+# Defaults mirror fusion/scoring/looking_away constants.
+#
+# H5: `eye_closed_thresh` trước đây ghi 0.18 nhưng KHÔNG bao giờ được áp dụng
+# (app.py quên đẩy xuống FusionState), nên giá trị chạy thật vẫn là 0.16 của
+# fusion.EYE_CLOSED_THRESH. Nay knob đã có tác dụng thật (xem
+# FusionState.apply_thresholds), nên default phải bằng đúng 0.16 — nếu để 0.18
+# thì việc "sửa knob" sẽ vô tình làm hệ thống nhạy hơn hẳn ngay lần khởi động
+# đầu tiên. Đây là thay đổi để KHỚP hành vi hiện hành, không phải tinh chỉnh.
 _DEFAULTS: dict[str, Any] = {
-    "eye_closed_thresh": 0.18,
+    "eye_closed_thresh": 0.16,
     "eye_closed_on_sec": 0.8,
     "eye_closed_hard_sec": 1.2,
     "yaw_thresh_deg": 25.0,

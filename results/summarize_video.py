@@ -1,8 +1,25 @@
-"""Đọc CSV và phân tích neck_tilt."""
+"""Đọc CSV và phân tích neck_tilt.
+
+M1: bỏ hard-code `E:/KhoiNghiep/GuardianPilot`.
+
+Usage:
+  python results/summarize_video.py [--csv results/video_nod_analysis.csv]
+"""
+import argparse
 import csv
+from pathlib import Path
+
 import numpy as np
 
-CSV = r"E:/KhoiNghiep/GuardianPilot/results/video_nod_analysis.csv"
+ROOT = Path(__file__).resolve().parents[1]
+
+_parser = argparse.ArgumentParser(description="Phân tích neck_tilt từ CSV")
+_parser.add_argument("--csv", type=Path,
+                     default=ROOT / "results" / "video_nod_analysis.csv")
+_args = _parser.parse_args()
+CSV = _args.csv
+if not Path(CSV).is_file():
+    raise SystemExit(f"Không tìm thấy CSV: {CSV}")
 rows = []
 with open(CSV) as f:
     r = csv.reader(f)
