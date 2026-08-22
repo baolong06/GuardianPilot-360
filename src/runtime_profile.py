@@ -15,19 +15,19 @@ import os
 from typing import Any
 
 _PROFILES: dict[str, dict[str, Any]] = {
-    # Máy dev / demo web — ưu tiên độ mượt UI
+    # Máy dev / demo web — ưu tiên độ chính xác landmark & độ mượt
     "dev": {
         "label": "development",
         "inference_interval_ms": 100,   # ~10 inference/s
-        "inference_width": 480,        # tăng từ 320 → 480 (detect face xa tốt hơn)
-        "inference_height": 360,       # tăng từ 240 → 360
+        "inference_width": 640,        # Nâng lên 640x480 để bắt chi tiết mắt/mống mắt chính xác
+        "inference_height": 480,
         "display_fps_cap": 30,
         "enable_lstm": True,
-        "mediapipe_width": 480,        # tăng từ 320 → 480 (face xa ~40px → ~60px → vượt MIN_FACE_SIZE_PX)
-        "mediapipe_height": 360,       # tăng từ 240 → 360
+        "mediapipe_width": 640,        # Độ phân giải đầu vào cho MediaPipe Holistic
+        "mediapipe_height": 480,
         "omp_num_threads": None,
         "use_pitch_nod": True,
-        "description": "Web demo — balanced CPU use, wider detection range",
+        "description": "High Resolution — Enhanced Eye Landmark Detection (640x480)",
     },
     # Edge ô tô / Jetson Nano class — ưu tiên ổn định & tiết kiệm tài nguyên
     "edge": {

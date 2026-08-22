@@ -398,12 +398,11 @@ videoFpsSlider.addEventListener('input', () => { videoFpsValue.textContent = vid
 // ── Webcam ────────────────────────────────────────────────────────────────
 btnStartCam.addEventListener('click', async () => {
   audioAlerts.unlock();
-  try {
-    // Request high FPS from camera
+    // Request HD resolution from camera
     camStream = await navigator.mediaDevices.getUserMedia({
       video: {
-        width:     { ideal: 640 },
-        height:    { ideal: 480 },
+        width:     { ideal: 1280, min: 640 },
+        height:    { ideal: 720,  min: 480 },
         frameRate: { ideal: 30, max: 60 },
       }
     });
@@ -585,7 +584,7 @@ function sendFrameToWorker(timestamp) {
     _smallCanvas.height = inferH;
   }
   _smallCtx.drawImage(webcamEl, 0, 0, inferW, inferH);
-  const dataUrl = _smallCanvas.toDataURL('image/jpeg', 0.75);
+  const dataUrl = _smallCanvas.toDataURL('image/jpeg', 0.88);
 
   inferenceWorker.postMessage({ type: 'frame', dataUrl, timestamp });
 }
