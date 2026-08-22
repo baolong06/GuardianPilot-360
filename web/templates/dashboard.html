@@ -3,152 +3,169 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="GuardianPilot 360 — Fleet Safety Dashboard & Real-Time Driver Monitoring" />
   <title>Fleet Dashboard — GuardianPilot 360</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
 </head>
 <body>
 
   <!-- Topbar -->
-  <header class="dashboard-header">
+  <header class="dashboard-header" role="banner">
     <div class="brand">
-      <svg class="brand-icon" width="28" height="28" viewBox="0 0 26 26" fill="none" aria-hidden="true">
-        <circle cx="13" cy="13" r="11" stroke="currentColor" stroke-width="1.5"/>
-        <circle cx="13" cy="13" r="5" fill="currentColor" opacity="0.5"/>
-        <circle cx="13" cy="13" r="2" fill="currentColor"/>
-      </svg>
+      <div class="brand-logo" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M12 8v4l3 3"/>
+          <path d="M3.6 9h3.4M17 9h3.4M12 3v2M12 19v2M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1"/>
+        </svg>
+      </div>
       <div>
-        <h1>GuardianPilot360</h1>
-        <p>Quản Lý Đội Xe &amp; Giám Sát Cảnh Báo Từ Xa</p>
+        <h1>GuardianPilot 360</h1>
+        <p>Quản Lý Đội Xe &amp; Giám Sát Cảnh Báo An Toàn</p>
       </div>
     </div>
     <div class="header-right">
-      <button id="btnRefresh" class="btn btn-ghost">🔄 Làm mới</button>
-      <a href="/" class="btn btn-primary">📹 Live Monitor</a>
+      <button id="btnRefresh" class="btn btn-ghost" title="Làm mới dữ liệu">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        Làm mới
+      </button>
+      <a href="/" class="btn btn-primary" title="Mở trang giám sát trực tiếp">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+        Live Monitor
+      </a>
     </div>
   </header>
 
   <div class="dashboard-container">
 
     <!-- Overview Stats Cards -->
-    <section class="stats-overview">
-      <div class="stat-card">
-        <div class="stat-icon">🚗</div>
+    <section class="stats-overview" aria-label="Tổng quan số liệu an toàn">
+      <div class="stat-card card-accent">
+        <div class="stat-icon" aria-hidden="true">🚗</div>
         <div class="stat-content">
           <span class="stat-title">Xe Đang Giám Sát</span>
           <span id="statActiveVehicles" class="stat-value">1</span>
+          <span class="stat-sub">Hoạt động thời gian thực</span>
         </div>
       </div>
 
-      <div class="stat-card">
-        <div class="stat-icon">⚠️</div>
+      <div class="stat-card card-warning">
+        <div class="stat-icon" aria-hidden="true">⚠️</div>
         <div class="stat-content">
           <span class="stat-title">Tổng Cảnh Báo</span>
           <span id="statTotalAlerts" class="stat-value">0</span>
+          <span class="stat-sub">Tất cả các cấp độ</span>
         </div>
       </div>
 
       <div class="stat-card card-critical">
-        <div class="stat-icon">🚨</div>
+        <div class="stat-icon" aria-hidden="true">🚨</div>
         <div class="stat-content">
           <span class="stat-title">Sự Kiện CRITICAL</span>
           <span id="statCriticalEvents" class="stat-value">0</span>
+          <span class="stat-sub">Cần can thiệp khẩn cấp</span>
         </div>
       </div>
 
-      <div class="stat-card">
-        <div class="stat-icon">👁</div>
+      <div class="stat-card card-normal">
+        <div class="stat-icon" aria-hidden="true">👁</div>
         <div class="stat-content">
           <span class="stat-title">PERCLOS Đỉnh</span>
           <span id="statPeakPerclos" class="stat-value">0%</span>
+          <span class="stat-sub">Tỷ lệ nhắm mắt cao nhất</span>
         </div>
       </div>
     </section>
 
     <!-- Analytics Charts Section -->
-    <section class="charts-section">
+    <section class="charts-section" aria-label="Biểu đồ phân tích">
       <div class="chart-card">
-        <h3>Phân Bố Cảnh Báo Theo Giờ</h3>
+        <h3>Phân Bố Cảnh Báo Theo Giờ (Hourly Distribution)</h3>
         <div class="canvas-wrap">
-          <canvas id="chartHourly" width="500" height="200"></canvas>
+          <canvas id="chartHourly" width="600" height="220" aria-label="Biểu đồ phân bố cảnh báo theo giờ"></canvas>
         </div>
       </div>
       <div class="chart-card">
-        <h3>Phân Bố Mức Độ Cảnh Báo</h3>
+        <h3>Phân Bố Mức Độ Rủi Ro (Alert Severity)</h3>
         <div class="canvas-wrap">
-          <canvas id="chartDistribution" width="300" height="200"></canvas>
+          <canvas id="chartDistribution" width="300" height="220" aria-label="Biểu đồ phân bố mức độ"></canvas>
         </div>
       </div>
     </section>
 
     <!-- Event Log Table Section -->
-    <section class="events-section">
+    <section class="events-section" aria-label="Nhật ký sự kiện">
       <div class="section-header">
-        <h2>Lịch Sử Sự Kiện Cảnh Báo (Event Log)</h2>
+        <h2>Nhật Ký Sự Kiện Cảnh Báo (Security &amp; Safety Event Log)</h2>
         <div class="filter-bar">
-          <input type="text" id="filterDriver" placeholder="Lọc theo Driver ID..." />
-          <input type="date" id="filterDate" />
-          <select id="filterState">
+          <input type="text" id="filterDriver" placeholder="Lọc theo Driver ID..." aria-label="Lọc theo Driver ID" />
+          <input type="date" id="filterDate" aria-label="Lọc theo ngày" />
+          <select id="filterState" aria-label="Lọc theo trạng thái">
             <option value="">-- Tất cả trạng thái --</option>
-            <option value="FATIGUE">FATIGUE (Cấp 1)</option>
-            <option value="DROWSY">DROWSY (Cấp 2)</option>
-            <option value="MICROSLEEP">MICROSLEEP (Cấp 3)</option>
-            <option value="CRITICAL">CRITICAL (Cấp 4)</option>
+            <option value="FATIGUE">FATIGUE (Cấp 1 - Mệt mỏi)</option>
+            <option value="DROWSY">DROWSY (Cấp 2 - Buồn ngủ)</option>
+            <option value="MICROSLEEP">MICROSLEEP (Cấp 3 - Ngủ gật)</option>
+            <option value="CRITICAL">CRITICAL (Cấp 4 - Nguy hiểm)</option>
           </select>
           <button id="btnFilter" class="btn btn-accent">Lọc</button>
         </div>
       </div>
 
-      <div class="table-wrap">
+      <div style="overflow-x: auto;">
         <table class="events-table">
           <thead>
             <tr>
               <th>ID</th>
-              <th>Thời Gian (NTP)</th>
-              <th>Xe ID</th>
-              <th>Tài Xế</th>
-              <th>Trạng Thái</th>
+              <th>Thời gian</th>
+              <th>Tài xế / Xe</th>
+              <th>Mức độ</th>
+              <th>Trạng thái</th>
               <th>PERCLOS</th>
-              <th>EAR Avg</th>
-              <th>Neck Tilt</th>
-              <th>GPS</th>
-              <th>Thao Tác</th>
+              <th>Drowsiness Score</th>
+              <th>Vận tốc</th>
+              <th>Hành động</th>
             </tr>
           </thead>
           <tbody id="eventsTbody">
             <tr>
-              <td colspan="10" class="empty-msg">Đang nạp danh sách sự kiện...</td>
+              <td colspan="9" style="text-align: center; color: var(--text-3); padding: 2rem;">
+                Đang tải dữ liệu sự kiện…
+              </td>
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div class="sync-row">
+        <span id="syncStatus">Cập nhật tự động mỗi 10s</span>
       </div>
     </section>
 
   </div>
 
   <!-- Event Detail Modal -->
-  <div id="eventModal" class="modal-overlay hidden">
+  <div id="eventModal" class="event-modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
     <div class="modal-box">
       <div class="modal-header">
-        <h3 id="modalTitle">Chi Tiết Sự Kiện #—</h3>
-        <button id="btnModalClose" class="close-btn">✕</button>
+        <h3 id="modalTitle">Chi Tiết Sự Kiện</h3>
+        <button id="btnModalClose" class="modal-close" aria-label="Đóng cửa sổ">✕</button>
       </div>
-      <div class="modal-body">
-        <div class="snapshot-view">
-          <div id="snapshotPlaceholder" class="snapshot-placeholder">
-            <span>📷 Mode Bảo Mật (Metadata Only)<br>Không lưu ảnh khuôn mặt</span>
-          </div>
-          <img id="modalSnapshotImg" class="snapshot-img hidden" alt="Event Snapshot" />
+
+      <div class="modal-snapshot">
+        <img id="modalSnapshotImg" src="" alt="Ảnh chụp lúc cảnh báo" class="hidden" />
+        <div id="snapshotPlaceholder" class="snapshot-placeholder">
+          Không có ảnh chụp snapshot cho sự kiện này
         </div>
-        <div class="modal-info-grid" id="modalInfoGrid">
-          <!-- Dynamic details -->
-        </div>
+      </div>
+
+      <div id="modalInfoGrid" class="modal-info-grid">
+        <!-- Injected via JS -->
       </div>
     </div>
   </div>
 
-  <footer class="footer">
-    <span>GuardianPilot 360 · Fleet Management &amp; Safety Dashboard</span>
-    <span id="syncStatus">Tự động cập nhật mỗi 10s</span>
+  <footer class="dashboard-footer">
+    <span>GuardianPilot 360 · Enterprise Driver Monitoring System Fleet Dashboard · ISO 26262 &amp; Euro NCAP Ready</span>
   </footer>
 
   <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>

@@ -85,8 +85,17 @@ _init_error: str | None = None
 _rule_only_mode: bool = False
 _model_load_mode: str | None = None
 
+_server_start_time = time.time()
+
 # Giữ alias cho tương thích ngược với script/test cũ đang đọc `_lock`.
 _lock = _infer_lock
+
+
+@app.after_request
+def _add_production_headers(response):
+    response.headers["X-GuardianPilot-Version"] = "1.0.0"
+    response.headers["X-GuardianPilot-System"] = "DMS-Automotive-Edge"
+    return response
 
 
 def _get_event_logger() -> EventLogger:
@@ -601,6 +610,44 @@ def api_runtime_profile():
         "eye_closed_thresh": threshold_store.get_thresholds()["eye_closed_thresh"],
         "camera": describe_camera(),
         **auth_status(),
+    })
+
+
+@app.route("/api/health")
+def api_health():
+    """Health check endpoint cho container probes / orchestrator."""
+    metrics = collect_metrics()
+    return jsonify({
+        "status": "healthy" if (_initialized or _rule_only_mode) else "starting",
+        "ready": _initialized,
+        "rule_only_mode": _rule_only_mode,
+        "version": "1.0.0",
+        "uptime_sec": round(time.time() - _server_start_time, 1),
+        "backend": os.getenv("HOLISTIC_BACKEND", "legacy"),
+        "profile": get_runtime_profile().get("profile", "dev"),
+        "system": {
+            "cpu_percent": metrics.get("cpu_percent"),
+            "memory_mb": metrics.get("rss_mb"),
+        },
+    })
+
+
+@app.route("/api/session/info")
+def api_session_info():
+    """Lấy thông tin chi tiết của phiên hiện tại."""
+    session = _get_session()
+    return jsonify({
+        "ok": True,
+        "session_id": session.session_id,
+        "driver_id": session.driver_id,
+        "vehicle_id": session.vehicle_id,
+        "alert_level": session.alert_manager.alert_level,
+        "inference_fps": round(session.inference_fps, 1),
+        "trip_memory": {
+            "perclos_peak": session.trip_memory.perclos_peak,
+            "alert_peak": session.trip_memory.alert_peak,
+            "samples": session.trip_memory.samples,
+        },
     })
 
 

@@ -27,6 +27,43 @@ _holistic: mp_vision.HolisticLandmarker | None = None
 _model_path: str | None = None
 _legacy_holistic = None
 
+
+# ── Backend selection (C5) ───────────────────────────────────────────────────
+# MediaPipe 0.10.14 co HAI duong chay Holistic:
+#
+#   "task"   HolisticLandmarker (Tasks API) doc file .task
+#   "legacy" mp.solutions.holistic
+#
+# HolisticLandmarker trong 0.10.14 la API CHUA HOAN THIEN (Google khong bao gio
+# release chinh thuc). Tren khuon mat THAT no abort ca process:
+#
+#   F0000 packet.cc:138] Check failed: holder_ != nullptr The packet is empty.
+#
+# Day la CHECK cua C++ -> abort() -> Python chet ngay. try/except KHONG bat duoc.
+# Voi mot Flask server, mot frame xau = mat toan bo process va moi session.
+#
+# Da do tren cung mot anh mat that:
+#   Tasks API (.task)      -> crash process
+#   mp.solutions.holistic  -> OK, 478 diem mat + 33 diem pose, ~52ms/frame
+#
+# Vi vay mac dinh la "legacy". Doi bang env HOLISTIC_BACKEND=task|legacy|auto
+# ("auto" = hanh vi cu: dung .task neu file ton tai).
+def get_holistic_backend() -> str:
+    value = os.getenv("HOLISTIC_BACKEND", "legacy").strip().lower()
+    return value if value in {"task", "legacy", "auto"} else "legacy"
+
+
+def _get_legacy_holistic():
+    """Lazy singleton cho mp.solutions.holistic."""
+    global _legacy_holistic
+    if _legacy_holistic is None:
+        _legacy_holistic = mp.solutions.holistic.Holistic(
+            static_image_mode=True,
+            model_complexity=1,
+            refine_face_landmarks=True,
+        )
+    return _legacy_holistic
+
 from .runtime_profile import get_runtime_profile
 
 # ── Frame resize config (theo EDGE_PROFILE) ──────────────────────────────────
@@ -334,17 +371,25 @@ def run_holistic(
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_resized)
 
     # ── Step 1: Run Holistic ────────────────────────────────────────────────
-    # Preferred: Holistic task model (.task). Fallback: mp.solutions.holistic
-    # when task file is not available in runtime (common in fresh Docker env).
+    # Backend chon theo env HOLISTIC_BACKEND (mac dinh "legacy" — an toan).
     #
-    # NOTE: We wrap detect() in try/except because MediaPipe C++ layer can crash
-    # with "packet is empty" assertion on first frame or GPU conflicts.
-    # Returning None gracefully lets the caller treat this as "no face detected".
+    # LUU Y: try/except duoi day CHI bat duoc exception phia Python.
+    # Neu tang C++ cua MediaPipe goi CHECK that bai (vi du "The packet is empty")
+    # thi no abort() -> ca process chet, khong co cach nao bat lai. Do la ly do
+    # backend mac dinh la "legacy" chu khong phai .task.
     face_landmarks_list = []
     pose_landmarks_list = []
 
+    backend = get_holistic_backend()
+    use_task = (
+        backend == "task"
+        or (backend == "auto" and Path(model_path).is_file())
+    )
+
     try:
-        if Path(model_path).is_file():
+        if use_task:
+            # CANH BAO: duong nay abort ca process tren khuon mat that trong
+            # mediapipe 0.10.14 (xem ghi chu o get_holistic_backend).
             holistic = get_landmarker(model_path)
             result = holistic.detect(mp_image)
             # MediaPipe Tasks API returns face_landmarks as a flat list
@@ -355,14 +400,7 @@ def run_holistic(
             face_landmarks_list = [flat_face] if flat_face else []
             pose_landmarks_list = [flat_pose] if flat_pose else []
         else:
-            global _legacy_holistic
-            if _legacy_holistic is None:
-                _legacy_holistic = mp.solutions.holistic.Holistic(
-                    static_image_mode=True,
-                    model_complexity=1,
-                    refine_face_landmarks=True,
-                )
-            legacy = _legacy_holistic.process(rgb_resized)
+            legacy = _get_legacy_holistic().process(rgb_resized)
             # mp.solutions returns face_landmarks.landmark as flat list
             face_landmarks_list = [list(legacy.face_landmarks.landmark)] if legacy.face_landmarks else []
             pose_landmarks_list = [list(legacy.pose_landmarks.landmark)] if legacy.pose_landmarks else []

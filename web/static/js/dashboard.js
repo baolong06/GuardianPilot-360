@@ -154,36 +154,31 @@ function renderStats(events, tripData) {
 function renderTable(events) {
   if (!eventsTbody) return;
   if (!events || events.length === 0) {
-    eventsTbody.innerHTML = `<tr><td colspan="10" class="empty-msg">Không có sự kiện cảnh báo nào phù hợp.</td></tr>`;
+    eventsTbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-3); padding: 2.5rem;">Không có sự kiện cảnh báo nào phù hợp với bộ lọc.</td></tr>`;
     return;
   }
 
   eventsTbody.innerHTML = events.map(e => {
     const level = e.alert_level || 0;
     const stateName = LEVEL_STATE_MAP[level] || 'NORMAL';
-    const badgeClass = `state-${stateName.toLowerCase()}`;
+    const badgeClass = `level-${level}`;
     const timeStr = formatTimestamp(e.timestamp);
     const perclosStr = e.perclos != null ? (e.perclos * 100).toFixed(1) + '%' : '—';
-    const earStr = e.ear_avg != null ? e.ear_avg.toFixed(3) : '—';
-    const neckStr = e.neck_tilt != null ? e.neck_tilt.toFixed(1) + '°' : '—';
-
-    let gpsStr = '—';
-    if (e.gps_lat != null && e.gps_lng != null) {
-      gpsStr = `<a href="https://maps.google.com/?q=${e.gps_lat},${e.gps_lng}" target="_blank" title="Xem vị trí Google Maps">📍 Map</a>`;
-    }
+    const speedStr = e.speed_kmh != null ? `${e.speed_kmh.toFixed(0)} km/h` : '0 km/h';
+    const scoreStr = e.drowsiness_score != null ? e.drowsiness_score.toFixed(3) : (e.ema_prob != null ? e.ema_prob.toFixed(3) : '—');
+    const driverVehicle = `${escapeHtml(e.driver_id || 'driver_1')} / ${escapeHtml(e.vehicle_id || 'truck_01')}`;
 
     return `
       <tr>
-        <td>#${e.id}</td>
-        <td>${timeStr}</td>
-        <td>${escapeHtml(e.vehicle_id || 'vehicle_demo')}</td>
-        <td>${escapeHtml(e.driver_id || 'driver_demo')}</td>
-        <td><span class="badge-state ${badgeClass}">${stateName} (Cấp ${level})</span></td>
-        <td>${perclosStr}</td>
-        <td>${earStr}</td>
-        <td>${neckStr}</td>
-        <td>${gpsStr}</td>
-        <td><button class="btn btn-ghost" onclick="viewEventDetail(${e.id})">🔍 Chi tiết</button></td>
+        <td style="font-family: var(--font-mono); color: var(--text-3)">#${e.id}</td>
+        <td style="white-space: nowrap">${timeStr}</td>
+        <td><strong>${driverVehicle}</strong></td>
+        <td><span class="level-badge ${badgeClass}">Cấp ${level}</span></td>
+        <td><strong>${stateName}</strong></td>
+        <td class="perclos-pill">${perclosStr}</td>
+        <td style="font-family: var(--font-mono); color: var(--text-2)">${scoreStr}</td>
+        <td style="font-family: var(--font-mono)">${speedStr}</td>
+        <td><button class="btn btn-ghost" style="padding: 0.25rem 0.6rem; min-height: 28px; font-size: 0.75rem;" onclick="viewEventDetail(${e.id})">🔍 Xem</button></td>
       </tr>
     `;
   }).join('');
@@ -194,7 +189,7 @@ window.viewEventDetail = function(eventId) {
   const ev = loadedEvents.find(e => e.id === eventId);
   if (!ev) return;
 
-  if (modalTitle) modalTitle.textContent = `Chi Tiết Sự Kiện #${ev.id} — Xe ${ev.vehicle_id || 'vehicle_demo'}`;
+  if (modalTitle) modalTitle.textContent = `Chi Tiết Sự Kiện #${ev.id} — ${ev.vehicle_id || 'truck_01'}`;
 
   // Reset snapshot view
   if (modalSnapshotImg) {
@@ -220,7 +215,7 @@ window.viewEventDetail = function(eventId) {
       })
       .catch(() => {
         if (snapshotPlaceholder) {
-          snapshotPlaceholder.innerHTML = `<span>📷 File snapshot không tồn tại<br>(đã bị xóa hoặc ở chế độ metadata-only)</span>`;
+          snapshotPlaceholder.innerHTML = `<span>📷 File snapshot không tồn tại hoặc đã được nén lưu trữ</span>`;
         }
       });
   }
@@ -231,14 +226,14 @@ window.viewEventDetail = function(eventId) {
 
   if (modalInfoGrid) {
     modalInfoGrid.innerHTML = `
-      <div class="info-item"><span>Mức Cảnh Báo:</span><strong>${stateName} (Cấp ${level})</strong></div>
-      <div class="info-item"><span>Thời Gian:</span><strong>${formatTimestamp(ev.timestamp)}</strong></div>
-      <div class="info-item"><span>Mã Xe (Vehicle ID):</span><strong>${escapeHtml(ev.vehicle_id || 'vehicle_demo')}</strong></div>
-      <div class="info-item"><span>Tài Xế (Driver ID):</span><strong>${escapeHtml(ev.driver_id || 'driver_demo')}</strong></div>
-      <div class="info-item"><span>PERCLOS (30s):</span><strong>${ev.perclos != null ? (ev.perclos * 100).toFixed(1) + '%' : '—'}</strong></div>
-      <div class="info-item"><span>EAR Trung Bình:</span><strong>${ev.ear_avg != null ? ev.ear_avg.toFixed(3) : '—'}</strong></div>
-      <div class="info-item"><span>Neck Tilt Angle:</span><strong>${ev.neck_tilt != null ? ev.neck_tilt.toFixed(1) + '°' : '—'}</strong></div>
-      <div class="info-item"><span>Đã Đồng Bộ Cloud:</span><strong>${ev.uploaded ? '✅ Có' : '⏳ Chờ sync'}</strong></div>
+      <div class="modal-info-item"><span class="modal-info-label">Mức Cảnh Báo</span><strong class="modal-info-value"><span class="level-badge level-${level}">${stateName} (Cấp ${level})</span></strong></div>
+      <div class="modal-info-item"><span class="modal-info-label">Thời Gian</span><strong class="modal-info-value">${formatTimestamp(ev.timestamp)}</strong></div>
+      <div class="modal-info-item"><span class="modal-info-label">Mã Xe / Tài Xế</span><strong class="modal-info-value">${escapeHtml(ev.vehicle_id || 'truck_01')} / ${escapeHtml(ev.driver_id || 'driver_1')}</strong></div>
+      <div class="modal-info-item"><span class="modal-info-label">PERCLOS (30s)</span><strong class="modal-info-value">${ev.perclos != null ? (ev.perclos * 100).toFixed(1) + '%' : '—'}</strong></div>
+      <div class="modal-info-item"><span class="modal-info-label">EAR Trung Bình</span><strong class="modal-info-value">${ev.ear_avg != null ? ev.ear_avg.toFixed(3) : '—'}</strong></div>
+      <div class="modal-info-item"><span class="modal-info-label">Neck Tilt</span><strong class="modal-info-value">${ev.neck_tilt != null ? ev.neck_tilt.toFixed(1) + '°' : '—'}</strong></div>
+      <div class="modal-info-item"><span class="modal-info-label">Vận Tốc Xe</span><strong class="modal-info-value">${ev.speed_kmh != null ? ev.speed_kmh.toFixed(0) + ' km/h' : '0 km/h'}</strong></div>
+      <div class="modal-info-item"><span class="modal-info-label">Đồng Bộ Cloud</span><strong class="modal-info-value">${ev.uploaded ? '✅ Đã đồng bộ' : '⏳ Lưu cục bộ'}</strong></div>
     `;
   }
 
@@ -271,13 +266,13 @@ function renderHourlyChart(events) {
   });
 
   const maxVal = Math.max(...hourlyCounts, 5);
-  const padLeft = 30, padBottom = 25, padTop = 10, padRight = 10;
+  const padLeft = 30, padBottom = 25, padTop = 15, padRight = 10;
   const chartW = w - padLeft - padRight;
   const chartH = h - padBottom - padTop;
   const barW = chartW / 24;
 
-  // Grid lines
-  ctx.strokeStyle = '#3a3733';
+  // Grid line
+  ctx.strokeStyle = '#2a2e34';
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(padLeft, padTop + chartH);
@@ -291,14 +286,21 @@ function renderHourlyChart(events) {
     const x = padLeft + i * barW + 2;
     const y = padTop + chartH - barHeight;
 
-    ctx.fillStyle = val > 0 ? '#d97757' : '#2e2c2a';
-    ctx.fillRect(x, y, barW - 4, barHeight);
+    ctx.fillStyle = val > 0 ? '#3b82f6' : '#1c1f22';
+    if (val > 0) {
+      // Rounded top bar
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(x, y, barW - 4, barHeight, [3, 3, 0, 0]) : ctx.rect(x, y, barW - 4, barHeight);
+      ctx.fill();
+    } else {
+      ctx.fillRect(x, y, barW - 4, Math.max(2, barHeight));
+    }
 
     // Label every 4 hours
     if (i % 4 === 0) {
-      ctx.fillStyle = '#9a9288';
+      ctx.fillStyle = '#7e8a97';
       ctx.font = '10px monospace';
-      ctx.fillText(`${i}h`, x, padTop + chartH + 15);
+      ctx.fillText(`${i}h`, x, padTop + chartH + 16);
     }
   }
 }
@@ -321,23 +323,24 @@ function renderDistributionChart(events) {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
 
   if (total === 0) {
-    ctx.fillStyle = '#9a9288';
+    ctx.fillStyle = '#7e8a97';
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Chưa có cảnh báo', w / 2, h / 2);
+    ctx.fillText('Chưa ghi nhận cảnh báo', w / 2, h / 2);
     return;
   }
 
   const colors = {
-    FATIGUE: '#c49a3c',
-    DROWSY: '#d97757',
-    MICROSLEEP: '#ff6b6b',
-    CRITICAL: '#ff4444',
+    FATIGUE: 'hsl(42, 85%, 52%)',
+    DROWSY: 'hsl(28, 90%, 55%)',
+    MICROSLEEP: 'hsl(0, 78%, 55%)',
+    CRITICAL: 'hsl(350, 85%, 50%)',
   };
 
   const cx = w / 3;
   const cy = h / 2;
-  const radius = Math.min(cx, cy) - 10;
+  const outerRadius = Math.min(cx, cy) - 12;
+  const innerRadius = outerRadius * 0.55;
   let startAngle = -Math.PI / 2;
 
   Object.keys(counts).forEach(st => {
@@ -346,8 +349,8 @@ function renderDistributionChart(events) {
     const sliceAngle = (val / total) * 2 * Math.PI;
 
     ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, radius, startAngle, startAngle + sliceAngle);
+    ctx.arc(cx, cy, outerRadius, startAngle, startAngle + sliceAngle);
+    ctx.arc(cx, cy, innerRadius, startAngle + sliceAngle, startAngle, true);
     ctx.closePath();
     ctx.fillStyle = colors[st];
     ctx.fill();
@@ -355,20 +358,33 @@ function renderDistributionChart(events) {
     startAngle += sliceAngle;
   });
 
+  // Center text (Total count)
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#e8edf2';
+  ctx.font = 'bold 16px monospace';
+  ctx.fillText(`${total}`, cx, cy - 2);
+  ctx.fillStyle = '#7e8a97';
+  ctx.font = '9px sans-serif';
+  ctx.fillText('TỔNG', cx, cy + 12);
+
   // Legend
   const legendX = (w / 3) * 2 - 10;
-  let legendY = 30;
+  let legendY = 25;
   ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
 
   Object.keys(counts).forEach(st => {
     const val = counts[st];
     ctx.fillStyle = colors[st];
-    ctx.fillRect(legendX, legendY, 12, 12);
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(legendX, legendY, 10, 10, 2) : ctx.rect(legendX, legendY, 10, 10);
+    ctx.fill();
 
-    ctx.fillStyle = '#f0ebe4';
+    ctx.fillStyle = '#e8edf2';
     ctx.font = '11px monospace';
-    ctx.fillText(`${st}: ${val}`, legendX + 18, legendY + 10);
-    legendY += 22;
+    ctx.fillText(`${st}: ${val}`, legendX + 16, legendY + 9);
+    legendY += 24;
   });
 }
 

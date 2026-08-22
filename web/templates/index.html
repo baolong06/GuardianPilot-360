@@ -3,66 +3,118 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Drowsiness Detection</title>
+  <meta name="description" content="GuardianPilot 360 — Hệ thống giám sát tài xế thời gian thực, phát hiện buồn ngủ bằng AI" />
+  <title>GuardianPilot 360 — Driver Monitoring System</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
 </head>
 <body>
 
-  <header class="topbar">
+  <!-- ══════════════════════ TOPBAR ══════════════════════ -->
+  <header class="topbar" role="banner">
     <div class="brand">
-      <svg class="brand-icon" width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
-        <circle cx="13" cy="13" r="11" stroke="currentColor" stroke-width="1.5"/>
-        <circle cx="13" cy="13" r="5"  fill="currentColor" opacity="0.5"/>
-        <circle cx="13" cy="13" r="2"  fill="currentColor"/>
-      </svg>
-      <div>
-        <h1>Drowsiness Detection</h1>
-        <p>MediaPipe · MLP · LSTM · Fusion</p>
+      <div class="brand-logo" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M12 8v4l3 3"/>
+          <path d="M3.6 9h3.4M17 9h3.4M12 3v2M12 19v2M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>GuardianPilot 360</h1>
+        <p>Driver Monitoring System · AI-Powered</p>
       </div>
     </div>
-    <div class="topbar-right">
-      <a href="/dashboard" class="btn btn-ghost" title="Quản lý đội xe">🚗 Fleet Dashboard</a>
-      <button id="btnMute" class="btn btn-ghost" title="Tắt/Bật cảnh báo âm thanh">🔔</button>
-      <button id="btnHudMode" class="btn btn-ghost" title="Chế độ HUD">⬛ HUD</button>
-      <span id="systemBadge" class="badge badge-idle">Chưa khởi tạo</span>
-      <button id="btnInit" class="btn btn-primary">Khởi tạo</button>
-    </div>
+
+    <nav class="topbar-right" role="navigation" aria-label="Navigation chính">
+      <a href="/dashboard" id="btnDashboard" class="btn btn-ghost" title="Fleet Dashboard">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        Fleet Dashboard
+      </a>
+      <button id="btnMute" class="btn btn-ghost" title="Tắt/Bật cảnh báo âm thanh" aria-pressed="false">
+        <svg id="iconMute" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+      </button>
+      <button id="btnHudMode" class="btn btn-ghost" title="Chế độ HUD toàn màn hình">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+        HUD
+      </button>
+      <span id="systemBadge" class="badge badge-idle" role="status" aria-live="polite">Chưa khởi tạo</span>
+      <button id="btnInit" class="btn btn-primary" aria-describedby="systemBadge">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        Khởi tạo
+      </button>
+    </nav>
   </header>
 
-  <!-- HUD Exit button -->
-  <button id="hudExitBtn" class="hud-exit-btn hidden">✕ Exit HUD</button>
+  <!-- HUD Exit -->
+  <button id="hudExitBtn" class="hud-exit-btn hidden">✕ Thoát HUD</button>
 
-  <main class="layout">
+  <!-- ══════════════════════ MAIN LAYOUT ══════════════════════ -->
+  <main class="layout" role="main">
 
-    <!-- Cột trái: nguồn đầu vào -->
-    <section class="panel input-panel">
+    <!-- ══ Cột trái: Nguồn đầu vào ══ -->
+    <section class="panel input-panel" aria-label="Nguồn đầu vào">
       <div class="panel-header">
         <h2>Nguồn đầu vào</h2>
-        <div class="tab-group">
-          <button class="tab active" data-tab="webcam">Webcam</button>
-          <button class="tab" data-tab="upload">Ảnh</button>
-          <button class="tab" data-tab="video">Video</button>
+        <div class="tab-group" role="tablist" aria-label="Chọn nguồn">
+          <button class="tab active" data-tab="webcam" role="tab" aria-selected="true" id="tab-webcam">📷 Webcam</button>
+          <button class="tab" data-tab="upload" role="tab" aria-selected="false" id="tab-upload">🖼 Ảnh</button>
+          <button class="tab" data-tab="video" role="tab" aria-selected="false" id="tab-video">🎬 Video</button>
         </div>
       </div>
 
-      <!-- Webcam tab -->
-      <div id="tabWebcam" class="tab-content active">
-        <div class="video-wrap">
-          <video id="webcam" autoplay playsinline muted></video>
-          <canvas id="captureCanvas" hidden></canvas>
-          <canvas id="annotatedCanvas" class="annotated-canvas hidden"></canvas>
-          <div id="videoOverlay" class="video-overlay hidden">
-            <span id="overlayStatus">NORMAL</span>
-            <span id="overlayProb">p=0.00</span>
+      <!-- ── Tab Webcam ── -->
+      <div id="tabWebcam" class="tab-content active" role="tabpanel" aria-labelledby="tab-webcam">
+        <div class="video-wrap" id="videoWrap">
+          <!-- Placeholder khi chưa có camera -->
+          <div class="video-placeholder" id="videoPlaceholder">
+            <div class="video-placeholder-icon">📷</div>
+            <span>Camera chưa kết nối</span>
+            <span style="font-size:0.72rem;color:var(--text-3)">Nhấn "Bật webcam" để bắt đầu</span>
+          </div>
+          <video id="webcam" autoplay playsinline muted aria-label="Camera feed"></video>
+          <canvas id="captureCanvas" hidden aria-hidden="true"></canvas>
+          <canvas id="annotatedCanvas" class="annotated-canvas hidden" aria-hidden="true"></canvas>
+          <!-- HUD Overlay -->
+          <div id="videoOverlay" class="video-overlay hidden" aria-live="polite">
+            <div class="hud-status">
+              <div class="hud-dot" id="hudDot"></div>
+              <span id="overlayStatus">NORMAL</span>
+              <span id="overlayProb" style="opacity:0.6">p=0.00</span>
+            </div>
+            <div class="hud-metrics">
+              <div class="hud-metric">
+                <span id="hudEar">—</span>
+                <span>EAR</span>
+              </div>
+              <div class="hud-metric">
+                <span id="hudPerclos">0%</span>
+                <span>PERCLOS</span>
+              </div>
+              <div class="hud-metric">
+                <span id="hudFps">—</span>
+                <span>FPS</span>
+              </div>
+            </div>
           </div>
         </div>
+
         <div class="controls">
-          <button id="btnStartCam" class="btn">Bật webcam</button>
-          <button id="btnAnalyzeLive" class="btn btn-accent" disabled>Phân tích live</button>
-          <button id="btnStopLive"   class="btn btn-ghost"  disabled>Dừng</button>
+          <button id="btnStartCam" class="btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+            Bật webcam
+          </button>
+          <button id="btnAnalyzeLive" class="btn btn-accent" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+            Phân tích live
+          </button>
+          <button id="btnStopLive" class="btn btn-ghost" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            Dừng
+          </button>
         </div>
-        <!-- Performance metrics bar -->
-        <div class="perf-bar">
+
+        <!-- Performance bar -->
+        <div class="perf-bar" aria-label="Thống kê hiệu năng">
           <div class="perf-item">
             <span class="perf-label">Display FPS</span>
             <span class="perf-value" id="displayFps">—</span>
@@ -72,54 +124,62 @@
             <span class="perf-value" id="inferenceFps">—</span>
           </div>
           <div class="perf-item">
-            <span class="perf-label">Alert latency</span>
+            <span class="perf-label">Latency</span>
             <span class="perf-value" id="alertLatency">—</span>
+          </div>
+          <div class="perf-item">
+            <span class="perf-label">Session</span>
+            <span class="perf-value" id="sessionId" style="font-size:0.65rem">—</span>
           </div>
         </div>
       </div>
 
-      <!-- Upload tab -->
-      <div id="tabUpload" class="tab-content">
-        <div class="upload-zone" id="dropZone">
-          <input type="file" id="fileInput" accept="image/*" hidden />
-          <p>Kéo thả ảnh hoặc <button type="button" id="btnPickFile" class="link-btn">chọn file</button></p>
-          <img id="previewImg" class="preview-img hidden" alt="Preview" />
+      <!-- ── Tab Upload Ảnh ── -->
+      <div id="tabUpload" class="tab-content" role="tabpanel" aria-labelledby="tab-upload">
+        <div class="upload-zone" id="dropZone" tabindex="0" role="button" aria-label="Kéo thả hoặc chọn ảnh để phân tích">
+          <input type="file" id="fileInput" accept="image/*" hidden aria-hidden="true" />
+          <div class="upload-icon">🖼</div>
+          <p><strong>Kéo thả ảnh vào đây</strong></p>
+          <p class="upload-hint">hoặc <button type="button" id="btnPickFile" class="link-btn">chọn file từ máy</button></p>
+          <img id="previewImg" class="preview-img hidden" alt="Ảnh xem trước" />
         </div>
-        <button id="btnAnalyzeUpload" class="btn btn-accent full-width" disabled>Phân tích ảnh</button>
+        <button id="btnAnalyzeUpload" class="btn btn-accent full-width" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          Phân tích ảnh
+        </button>
       </div>
 
-      <!-- Video tab -->
-      <div id="tabVideo" class="tab-content">
-        <div class="upload-zone" id="videoDropZone">
-          <input type="file" id="videoInput" accept="video/*" hidden />
-          <div class="upload-icon" aria-hidden="true">▶</div>
+      <!-- ── Tab Video ── -->
+      <div id="tabVideo" class="tab-content" role="tabpanel" aria-labelledby="tab-video">
+        <div class="upload-zone" id="videoDropZone" tabindex="0" role="button" aria-label="Kéo thả hoặc chọn video để phân tích">
+          <input type="file" id="videoInput" accept="video/*" hidden aria-hidden="true" />
+          <div class="upload-icon">🎬</div>
           <p><strong>Nạp video cần phân tích</strong></p>
-          <p class="upload-hint">Kéo thả MP4, WebM, MOV hoặc
-            <button type="button" id="btnPickVideo" class="link-btn">chọn từ máy</button>
-          </p>
+          <p class="upload-hint">MP4, WebM, MOV · Kéo thả hoặc <button type="button" id="btnPickVideo" class="link-btn">chọn từ máy</button></p>
           <div id="videoFileMeta" class="video-file-meta hidden">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
             <strong id="videoFileName"></strong>
             <span id="videoFileInfo">Đang đọc thông tin video…</span>
           </div>
         </div>
 
-        <div id="videoWorkspace" class="video-comparison hidden">
+        <div id="videoWorkspace" class="video-comparison hidden" aria-label="So sánh video gốc và kết quả">
           <article class="video-stage">
             <div class="video-stage-header">
               <span>Video gốc</span>
               <span class="stage-badge">INPUT</span>
             </div>
-            <video id="fileVideo" controls playsinline preload="metadata"></video>
+            <video id="fileVideo" controls playsinline preload="metadata" aria-label="Video nguồn"></video>
           </article>
           <article class="video-stage video-stage-result">
             <div class="video-stage-header">
               <span>Kết quả nhận diện</span>
               <span id="videoLiveBadge" class="stage-badge stage-badge-live">CHỜ</span>
             </div>
-            <div class="video-result-surface">
-              <canvas id="videoAnnotatedPreview" class="hidden"></canvas>
+            <div class="video-result-surface" role="img" aria-label="Frame đã annotate">
+              <canvas id="videoAnnotatedPreview" class="hidden" aria-label="Frame phân tích"></canvas>
               <div id="videoResultPlaceholder" class="video-result-placeholder">
-                Kết quả từ model sẽ hiển thị tại đây
+                <span>Kết quả từ model sẽ xuất hiện tại đây</span>
               </div>
             </div>
           </article>
@@ -127,100 +187,187 @@
 
         <div class="video-controls-row">
           <div class="controls video-actions">
-            <button id="btnAnalyzeVideo" class="btn btn-accent" disabled>Phân tích video</button>
-            <button id="btnStopVideo" class="btn btn-ghost" disabled>Dừng</button>
+            <button id="btnAnalyzeVideo" class="btn btn-accent" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Phân tích video
+            </button>
+            <button id="btnStopVideo" class="btn btn-ghost" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+              Dừng
+            </button>
           </div>
           <label class="fps-label">
             Tốc độ phân tích
-            <input type="range" id="videoFpsSlider" min="1" max="10" value="5" />
+            <input type="range" id="videoFpsSlider" min="1" max="10" value="5" aria-label="FPS phân tích video" />
             <strong><span id="videoFpsValue">5</span> FPS</strong>
           </label>
         </div>
-        <div class="video-progress hidden" id="videoProgressWrap">
-          <div class="progress-bar"><div id="videoProgressBar" class="progress-fill"></div></div>
-          <span id="videoProgressText">0%</span>
+
+        <div class="video-progress hidden" id="videoProgressWrap" aria-label="Tiến trình phân tích">
+          <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+            <div id="videoProgressBar" class="progress-fill" style="width:0%"></div>
+          </div>
+          <span id="videoProgressText" style="font-size:0.75rem;font-family:var(--font-mono);color:var(--text-2);white-space:nowrap">0%</span>
         </div>
         <div id="videoProcessingMeta" class="video-processing-meta hidden">
           <span id="videoFrameCount">0 frame</span>
           <span id="videoElapsed">00:00 / 00:00</span>
           <span id="videoProcessingState">Đang chuẩn bị…</span>
         </div>
-        <div id="videoTimeline" class="video-timeline"></div>
-
+        <div id="videoTimeline" class="video-timeline" aria-label="Timeline trạng thái video"></div>
         <div id="videoDownloadPanel" class="video-download-panel hidden">
           <div>
-            <strong>Video kết quả đã sẵn sàng</strong>
+            <strong>Video kết quả sẵn sàng</strong>
             <span id="videoOutputName">output/video_analyzed.mp4</span>
           </div>
-          <a id="btnDownloadVideo" class="btn btn-primary" href="#" download>Tải xuống MP4</a>
+          <a id="btnDownloadVideo" class="btn btn-primary" href="#" download>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Tải xuống MP4
+          </a>
         </div>
       </div>
 
-      <div id="statusBar" class="status-bar">Khởi tạo hệ thống trước khi phân tích.</div>
+      <!-- Status bar -->
+      <div id="statusBar" class="status-bar" role="status" aria-live="polite">Khởi tạo hệ thống trước khi bắt đầu phân tích.</div>
     </section>
 
-    <!-- Cột phải: kết quả -->
-    <section class="panel result-panel" id="resultPanel" data-alarm="off" data-state="normal">
+    <!-- ══ Cột phải: Kết quả & Metrics ══ -->
+    <section class="panel result-panel" aria-label="Kết quả phân tích" id="resultPanel" data-alarm="off" data-state="normal">
 
-      <!-- Alert card -->
-      <div class="alert-card" id="alertCard" data-alarm="off" data-state="normal">
+      <!-- ── Alert Card chính ── -->
+      <div class="alert-card" id="alertCard" data-alarm="off" data-state="normal" role="alert" aria-live="assertive">
+        <!-- Level indicator strip -->
+        <div class="alert-levels" aria-label="Mức cảnh báo (0-4)">
+          <div class="level-pip" id="pip0" title="NORMAL" aria-label="Level 0 Normal"></div>
+          <div class="level-pip" id="pip1" title="FATIGUE" aria-label="Level 1 Fatigue"></div>
+          <div class="level-pip" id="pip2" title="DROWSY" aria-label="Level 2 Drowsy"></div>
+          <div class="level-pip" id="pip3" title="MICROSLEEP" aria-label="Level 3 Microsleep"></div>
+          <div class="level-pip" id="pip4" title="CRITICAL" aria-label="Level 4 Critical"></div>
+        </div>
+
         <div class="alert-label" id="alertLabel">NORMAL</div>
-        <div class="alert-prob"  id="alertProb">p = 0.00</div>
+        <div class="alert-prob" id="alertProb">Drowsiness Score: 0.000</div>
+        <div class="alert-message" id="alertMessage">Tài xế tỉnh táo — Hệ thống đang giám sát</div>
+
         <div class="alert-meta">
           <span>MLP <strong id="mlpProb">—</strong></span>
-          <span>LSTM <strong id="lstmProb">—</strong></span>
           <span>EMA <strong id="emaProb">—</strong></span>
+          <span>LSTM <strong id="lstmProb">—</strong></span>
+        </div>
+
+        <!-- Actuation channels -->
+        <div class="channels" aria-label="Kênh cảnh báo đang kích hoạt">
+          <div class="channel-pill" id="channelSound">🔊 Sound</div>
+          <div class="channel-pill" id="channelVibration">📳 Vibration</div>
+          <div class="channel-pill" id="channelBreak">🛑 Dừng xe</div>
         </div>
       </div>
 
-      <!-- PERCLOS Gauge bar -->
-      <div class="perclos-gauge" id="perclosGauge">
+      <!-- ── PERCLOS + EAR Metrics ── -->
+      <div class="perclos-gauge" aria-label="Chỉ số PERCLOS">
         <div class="gauge-header">
-          <span>PERCLOS (30s)</span>
+          <span class="gauge-label">PERCLOS (30s)</span>
           <span id="perclosValue" class="gauge-value">0%</span>
         </div>
-        <div class="gauge-bar">
-          <div id="perclosBar" class="gauge-fill" style="width: 0%;"></div>
+        <div class="gauge-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="PERCLOS">
+          <div id="perclosBar" class="gauge-fill" style="width:0%"></div>
+        </div>
+
+        <div style="margin-top:var(--sp-3);display:flex;flex-direction:column;gap:var(--sp-2)">
+          <div class="metric-row">
+            <span class="metric-label">EAR avg</span>
+            <div class="metric-bar"><div class="metric-fill" id="earBar" style="width:60%;background:var(--normal)"></div></div>
+            <span class="metric-val" id="earVal">—</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Eye streak</span>
+            <div class="metric-bar"><div class="metric-fill" id="eyeStreakBar" style="width:0%;background:var(--drowsy)"></div></div>
+            <span class="metric-val" id="eyeStreakVal">0ms</span>
+          </div>
         </div>
       </div>
 
-      <!-- Feature readout -->
-      <h3 class="section-title">Landmark Features</h3>
-      <div class="feature-grid">
-        <div class="feat-row"><span>EAR trái</span><strong id="featEarLeft">—</strong></div>
-        <div class="feat-row"><span>EAR phải</span><strong id="featEarRight">—</strong></div>
-        <div class="feat-row"><span>EAR avg</span><strong id="featEarAvg">—</strong></div>
-        <div class="feat-row"><span>MAR</span><strong id="featMar">—</strong></div>
-        <div class="feat-row"><span>Pitch</span><strong id="featPitch">—</strong></div>
-        <div class="feat-row"><span>Yaw</span><strong id="featYaw">—</strong></div>
-        <div class="feat-row"><span>Roll</span><strong id="featRoll">—</strong></div>
-        <div class="feat-row"><span>Neck tilt</span><strong id="featNeck">—</strong></div>
+      <!-- ── Landmark Features ── -->
+      <div>
+        <h3 class="section-title">Landmark Features</h3>
+        <div class="feature-grid">
+          <div class="feat-row"><span>EAR trái</span><strong id="featEarLeft">—</strong></div>
+          <div class="feat-row"><span>EAR phải</span><strong id="featEarRight">—</strong></div>
+          <div class="feat-row"><span>EAR avg</span><strong id="featEarAvg">—</strong></div>
+          <div class="feat-row"><span>MAR</span><strong id="featMar">—</strong></div>
+          <div class="feat-row"><span>Pitch</span><strong id="featPitch">—</strong></div>
+          <div class="feat-row"><span>Yaw</span><strong id="featYaw">—</strong></div>
+          <div class="feat-row"><span>Roll</span><strong id="featRoll">—</strong></div>
+          <div class="feat-row"><span>Neck tilt</span><strong id="featNeck">—</strong></div>
+        </div>
       </div>
 
-      <!-- Alarm panel for Banners -->
-      <div class="alarm-panel">
+      <!-- ── Rule Alarm Banners ── -->
+      <div class="alarm-panel" aria-label="Cảnh báo chi tiết" aria-live="polite">
         <div id="neckAlarmBanner" class="alarm-banner neck-banner hidden">
-          <span class="banner-icon">↕</span> Neck-tilt alarm — gật gù phát hiện
+          <span class="banner-icon" aria-hidden="true">↕</span>
+          <div>
+            <strong>Phát hiện gật gù</strong>
+            <span style="display:block;font-size:0.72rem;opacity:0.8">Neck-tilt alarm — Head nod detected</span>
+          </div>
         </div>
         <div id="eyeAlarmBanner" class="alarm-banner eye-banner hidden">
-          <span class="banner-icon">👁</span> Eye-closure alarm — mắt nhắm kéo dài phát hiện
+          <span class="banner-icon" aria-hidden="true">👁</span>
+          <div>
+            <strong>Mắt nhắm kéo dài</strong>
+            <span style="display:block;font-size:0.72rem;opacity:0.8">Eye-closure alarm — Prolonged eye closure</span>
+          </div>
         </div>
         <div id="yawnAlarmBanner" class="alarm-banner yawn-banner hidden">
-          <span class="banner-icon">😮</span> Yawn detected — ngáp phát hiện
+          <span class="banner-icon" aria-hidden="true">😮</span>
+          <div>
+            <strong>Ngáp dài phát hiện</strong>
+            <span style="display:block;font-size:0.72rem;opacity:0.8">Yawn detected — Fatigue indicator</span>
+          </div>
         </div>
         <div id="cameraObsBanner" class="alarm-banner obs-banner hidden">
-          <span class="banner-icon">⚠️</span> Camera bị che hoặc mất mặt
+          <span class="banner-icon" aria-hidden="true">⚠️</span>
+          <div>
+            <strong>Camera bị che / Mất mặt</strong>
+            <span style="display:block;font-size:0.72rem;opacity:0.8">Camera obstructed or face lost</span>
+          </div>
+        </div>
+        <div id="phoneBanner" class="alarm-banner phone-banner hidden">
+          <span class="banner-icon" aria-hidden="true">📱</span>
+          <div>
+            <strong>Phát hiện sử dụng điện thoại</strong>
+            <span style="display:block;font-size:0.72rem;opacity:0.8">Phone distraction detected</span>
+          </div>
+        </div>
+        <div id="lookAwayBanner" class="alarm-banner neck-banner hidden">
+          <span class="banner-icon" aria-hidden="true">↗</span>
+          <div>
+            <strong>Tài xế nhìn sang hướng khác</strong>
+            <span style="display:block;font-size:0.72rem;opacity:0.8">Looking away — Attention diverted</span>
+          </div>
         </div>
       </div>
 
-      <!-- Timeline strip -->
-      <h3 class="section-title" style="margin-top:1.25rem">Timeline</h3>
-      <div id="timeline" class="timeline"></div>    </section>
+      <!-- ── Alert Timeline ── -->
+      <div>
+        <h3 class="section-title">Alert Timeline <span id="timelineRange" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-3);font-size:0.68rem">(60 frames)</span></h3>
+        <div id="timeline" class="timeline" role="img" aria-label="Lịch sử trạng thái"></div>
+      </div>
+
+    </section>
   </main>
 
-  <footer class="footer">
-    <span>GuardianPilot 360 · MLP + LSTM + Neck-tilt Fusion</span>
-    <span id="latencyInfo" title="Inference round-trip time">RTT: —</span>
+  <!-- ══════════════════════ FOOTER ══════════════════════ -->
+  <footer class="footer" role="contentinfo">
+    <div class="footer-left">
+      <div class="footer-dot" id="footerDot" title="System status"></div>
+      <span>GuardianPilot 360 · MediaPipe + MLP + Rule Fusion</span>
+      <span id="ruleOnlyBadge" class="badge badge-warn hidden">Rule-Only Mode</span>
+    </div>
+    <div style="display:flex;gap:1.5rem;align-items:center">
+      <span id="latencyInfo" style="font-family:var(--font-mono)" title="Inference round-trip">RTT: —</span>
+      <span id="versionInfo" style="color:var(--text-3)">v1.0.0</span>
+    </div>
   </footer>
 
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>

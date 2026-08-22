@@ -105,6 +105,23 @@ curl -X POST http://localhost:5000/api/init
 
 Kỳ vọng: `"rule_only_mode": false`, `"load_mode": "weights"`.
 
+## ⚠️ Backend MediaPipe — đừng đổi sang `task`
+
+`HolisticLandmarker` (Tasks API, đọc file `.task`) trong mediapipe 0.10.14 là API
+**chưa hoàn thiện**. Trên khuôn mặt thật nó làm **abort cả process**:
+
+```
+F0000 packet.cc:138] Check failed: holder_ != nullptr The packet is empty.
+```
+
+Đây là `CHECK` ở tầng C++ → `abort()` → Python chết ngay, **`try/except` không bắt được**.
+Với server đang chạy: một frame có mặt người = mất toàn bộ process và mọi session.
+
+Vì vậy mặc định là `HOLISTIC_BACKEND=legacy` (`mp.solutions.holistic`) — đã đo trên
+cùng ảnh: 478 điểm mặt + 33 điểm pose, ~52 ms/frame, không crash.
+
+`HOLISTIC_BACKEND=task` chỉ dành cho thử nghiệm khi nâng cấp mediapipe.
+
 ## Trạng thái model — đọc trước khi tin kết quả
 
 Model MLP/LSTM đi kèm được train **ngoài repo này** (notebook nguồn không có
@@ -132,6 +149,7 @@ FORCE_RULE_ONLY=true python app.py
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
 | `EDGE_PROFILE` | `dev` | `dev` \| `edge` — độ phân giải, FPS, bật/tắt LSTM |
+| `HOLISTIC_BACKEND` | `legacy` | `legacy` \| `task` \| `auto` — **đừng đổi trừ khi biết rõ**, xem cảnh báo dưới |
 | `GUARDIANPILOT_API_KEY` | *(trống)* | bật auth cho endpoint nhạy cảm |
 | `FORCE_RULE_ONLY` | `false` | bỏ qua MLP/LSTM, chỉ chạy rule engine |
 | `ALLOW_RULE_ONLY_MODE` | `false` | cho phép fallback rule-only khi load model fail |

@@ -94,6 +94,12 @@ tắt qua `FORCE_RULE_ONLY=true`, hệ thống vẫn cảnh báo được.
 - **Video dùng media timeline, không dùng wall-clock.** `/api/analyze` nhận
   `source_timestamp_ms` để các rule theo thời lượng không phụ thuộc tốc độ inference.
   Nhưng chỉ số FPS thì phải dùng `time.monotonic()` (`DriverSession.note_inference`).
+- **KHÔNG dùng `HolisticLandmarker` (Tasks API).** Trong mediapipe 0.10.14 nó abort
+  cả process trên khuôn mặt thật (`Check failed: holder_ != nullptr`) — là `CHECK` của
+  C++ nên `try/except` vô dụng. `src/pipeline.py` mặc định `HOLISTIC_BACKEND=legacy`
+  (`mp.solutions.holistic`). Đừng "tối ưu" bằng cách quay lại đường `.task`.
+- **`mp.solutions.holistic` KHÔNG deterministic** — cùng một ảnh cho EAR lệch tới 0.044
+  qua các lần gọi. Đừng viết test khẳng định giá trị EAR tuyệt đối từ ảnh thật.
 - **HolisticLandmarker chỉ trả MỘT khuôn mặt.** `_score_person` trong `pipeline.py`
   còn đó để chấm điểm/debug, nhưng nhánh multi-person đã gỡ vì không bao giờ chạy.
 - **pitch/yaw/roll là góc TƯƠNG ĐỐI** (camera chưa calib) — chỉ dùng qua

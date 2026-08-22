@@ -15,9 +15,10 @@
 | Kiểm chứng API (23 mục) | — | ✅ **23/23 PASS** với model thật (`load_mode=weights`) |
 | Cảnh báo sklearn khi unpickle scaler | ⚠️ `InconsistentVersionWarning` | ✅ Hết |
 | Số dependency runtime | 11 | 9 (bỏ `pandas`, chuyển `pytest` sang dev) |
+| Chạy trên khuôn mặt người thật | 💥 abort cả process | ✅ 478 landmark, 8 FPS, ổn định 30 frame |
 
-**24 vấn đề: 22 ĐÃ SỬA · 1 GIẢM THIỂU (C4) · 1 KHÔNG LÀM (C3, theo yêu cầu).**
-Phát sinh thêm **2 phát hiện mới** trong lúc sửa (M11, và một đính chính cho C4).
+**27 vấn đề: 24 ĐÃ SỬA · 1 GIẢM THIỂU (C4) · 1 GHI NHẬN (M12) · 1 KHÔNG LÀM (C3, theo yêu cầu).**
+Phát sinh **4 phát hiện mới** trong lúc sửa và soát lại: **C5** (Critical), M11, M12, L6 — cộng một đính chính cho C4.
 
 ---
 
@@ -28,6 +29,7 @@ Phát sinh thêm **2 phát hiện mới** trong lúc sửa (M11, và một đín
 | **C1** | Critical | ✅ ĐÃ SỬA | Tạo `.venv` Python 3.11, cài đúng version ghim; thêm `tools/check_env.py`; ghi rõ ràng buộc Python 3.9–3.12 vào `requirements.txt` + README |
 | **C2** | Critical | ✅ ĐÃ SỬA | Chặn NaN ở đường LSTM + lưới an toàn `_json_safe()` ở tầng response |
 | **C3** | Critical | ⛔ KHÔNG LÀM | Ngoài phạm vi theo yêu cầu của bạn |
+| **C5** | Critical | ✅ ĐÃ SỬA | **MỚI** — `HolisticLandmarker` (Tasks API) **abort cả process** trên khuôn mặt thật. Đổi backend mặc định sang `mp.solutions.holistic` |
 | **C4** | Critical | ⚠️ GIẢM THIỂU | Thêm `FORCE_RULE_ONLY=true` + `tools/model_calibration.py`. **Gốc chỉ chữa được bằng retrain (= C3).** Xem §5 — kết luận C4 đã được đính chính |
 | **H1** | High | ✅ ĐÃ SỬA | Gỡ ~50 dòng nhánh multi-person không bao giờ chạy (kèm `NameError` tiềm ẩn) |
 | **H2** | High | ✅ ĐÃ SỬA | `src/session.py` — state tách theo `session_id`, tương thích ngược qua session `default` |
@@ -46,6 +48,8 @@ Phát sinh thêm **2 phát hiện mới** trong lúc sửa (M11, và một đín
 | **M9** | Medium | ✅ ĐÃ SỬA | `src/camera.py` + `docs/CAMERA_CALIBRATION.md` |
 | **M10** | Medium | ✅ ĐÃ SỬA | Codec `avc1` (H.264) trước, fallback `mp4v` |
 | **M11** | Medium | ✅ ĐÃ SỬA | **MỚI** — scaler pickle bằng sklearn 1.6.1 nhưng requirements ghim 1.5.1 |
+| **M12** | Medium | 📋 ĐÃ GHI NHẬN | **MỚI** — `mp.solutions.holistic` không deterministic: cùng ảnh cho EAR khác nhau (biên độ 0.044). Chưa sửa — xem §7 |
+| **L6** | Low | ✅ ĐÃ SỬA | **MỚI** — `sessionStorage` chưa bọc try/catch (lỗi do chính tôi tạo ra ở vòng sửa trước) |
 | **L1** | Low | ✅ ĐÃ SỬA (một phần) | Sửa typo, gỡ hằng số chết trong `app.js`. **Không** tách ES modules (theo lựa chọn của bạn) |
 | **L2** | Low | ✅ ĐÃ SỬA | Gỡ pandas hoàn toàn khỏi `src/fusion.py` và requirements |
 | **L3** | Low | ✅ ĐÃ SỬA | `reset()` tường minh cho `FusionState` |
@@ -85,6 +89,71 @@ Không có literal NaN/Infinity trong JSON: PASS
 ```
 
 **Rủi ro:** không. Điền NaN → 0.0 dùng đúng quy ước mà đường MLP đã dùng sẵn.
+
+---
+
+### C5 — MediaPipe abort cả process trên khuôn mặt thật 🔴 **(phát hiện mới, nghiêm trọng nhất)**
+
+**Phát hiện thế nào.** Sau khi sửa xong, tôi test end-to-end với ảnh mặt người thật
+(crop từ khung preview webcam trong `results/video_mid_frame.png`). Process chết ngay:
+
+```
+F0000 packet.cc:138] Check failed: holder_ != nullptr The packet is empty.
+*** Check failure stack trace: ***
+```
+
+**Đo lại trên CÙNG một ảnh:**
+
+| Đường chạy | Kết quả |
+|---|---|
+| `HolisticLandmarker` (Tasks API, file `.task`) — **đường app đang dùng** | 💥 abort cả process |
+| `mp.solutions.holistic` (legacy) | ✅ 478 điểm mặt + 33 điểm pose, ~52 ms/frame |
+| `mp.solutions.face_mesh` | ✅ 478 điểm |
+
+Ảnh xám / ảnh nhiễu / ảnh hoạt hình **không** crash — vì không detect ra mặt. Crash chỉ
+xảy ra khi có **mặt thật**, tức là đúng trường hợp vận hành bình thường.
+
+**Không phải regression.** Tôi lấy `src/pipeline.py` từ `git HEAD` chạy A/B trong hai
+process riêng: **bản gốc crash y hệt**. Đây là bug đã có sẵn, chỉ chưa ai tái hiện được.
+
+**Vì sao nguy hiểm.** Comment sẵn có trong code viết sai:
+
+```python
+# NOTE: We wrap detect() in try/except because MediaPipe C++ layer can crash
+# with "packet is empty" assertion ... Returning None gracefully lets the caller
+# treat this as "no face detected".
+```
+
+`CHECK` thất bại ở tầng C++ gọi `abort()` — Python chết ngay lập tức, **`try/except`
+hoàn toàn vô dụng**. Với một Flask server: một frame có mặt người = mất toàn bộ
+process, mất mọi session, phải khởi động lại thủ công.
+
+Nguyên nhân gốc: `HolisticLandmarker` trong mediapipe 0.10.14 là **API chưa hoàn thiện** —
+Google không bao giờ release chính thức Holistic cho Tasks API.
+
+**Đã sửa** — [src/pipeline.py](src/pipeline.py): thêm `get_holistic_backend()` đọc env
+`HOLISTIC_BACKEND`:
+
+| Giá trị | Hành vi |
+|---|---|
+| `legacy` **(mặc định mới)** | luôn dùng `mp.solutions.holistic` — an toàn |
+| `task` | ép dùng `.task` — có thể crash, chỉ để thử nghiệm |
+| `auto` | hành vi CŨ: dùng `.task` nếu file tồn tại |
+
+Đồng thời sửa lại comment sai về try/except.
+
+**Bằng chứng sau khi sửa** — 30 frame liên tiếp qua `/api/analyze` với mặt thật:
+
+```
+frame  0: face=True EAR=0.227 p_mlp=0.322 p_lstm=None  state=NORMAL
+frame 14: face=True EAR=0.246 p_mlp=0.578 p_lstm=None  state=DROWSY
+frame 29: face=True EAR=0.248 p_mlp=0.586 p_lstm=0.542 state=DROWSY
+trung bình 125 ms/frame (8.0 FPS) · JSON hợp lệ · không crash
+analyze_lite: 478 điểm mặt + 11 điểm pose
+```
+
+**Đây là lần đầu tiên trong cả hai vòng làm việc mà hệ thống được chứng minh là chạy
+đúng trên khuôn mặt người thật.**
 
 ---
 
@@ -208,6 +277,7 @@ là nguồn sự thật → đã ghim `scikit-learn==1.6.1`. Cảnh báo biến 
 | M9 | `src/camera.py`, `src/landmarks.py` | Intrinsics qua env; **mặc định tái tạo chính xác giả định cũ** nên head-pose không đổi |
 | M10 | `src/video_output.py` | `CODEC_PREFERENCE = ("avc1", "mp4v")`, trả thêm trường `codec` |
 | L1 | `web/static/js/app.js` | Sửa typo `mulai rendah`; `EAR_CLOSED_THRESHOLD` cứng → `earClosedThreshold` lấy từ server |
+| L6 | `web/static/js/app.js` | **Lỗi tôi tự tạo ra ở vòng trước:** `sessionStorage.getItem()` không bọc `try/catch`. Ở chế độ chặn site-data nó ném `SecurityError`, mà đây là code top-level → cả `app.js` chết → **UI trắng**. Đã bọc try/catch cho cả get lẫn set, và guard `self.crypto` (vì `crypto.randomUUID` chỉ có trong secure context — truy cập qua `http://<LAN-IP>:5000` sẽ undefined) |
 | L3 | `src/fusion.py` | `reset()` tường minh — không còn `self.__init__()`, **giữ lại ngưỡng HITL đã cấu hình** |
 | — | `pytest.ini` | `testpaths = tests` — `pytest` trần ở root không gom nhầm 8 file `tools/test_*.py` |
 | — | `search_nb.py` | argparse + báo lỗi rõ ràng thay vì `FileNotFoundError` trần |
@@ -264,6 +334,14 @@ artifact hiện tại cho kết quả **khác**:
 (*"LSTM hay bị kẹt ở ~0.55"*) và cái guard `abs(p_lstm - p_mlp) > 0.15 → chỉ dùng MLP`
 — guard đó chính là lý do hệ thống vẫn chạy được trên thực tế.
 
+**Kiểm chứng chéo trên khuôn mặt THẬT** (sau khi sửa C5) khẳng định lại điều này.
+Khung hình thật có `EAR = 0.196` — mắt đang khá hẹp, chỉ nhỉnh hơn ngưỡng nhắm 0.16
+(chính app trong ảnh chụp màn hình cũng đang báo `EAR avg 0.174` + "eye-closure alarm").
+MLP trả `p_drowsy = 0.558`, **khớp đúng** với bảng quét ở trên (EAR 0.20 → 0.570).
+Nghĩa là MLP phản ứng nhất quán, không phải bias. Phân tích độ nhạy từng feature cho
+thấy `ear_avg` là yếu tố chi phối (0.10 → 0.932 ; 0.35 → 0.138), còn `neck_tilt` gần
+như không ảnh hưởng (0.281 → 0.199 trên toàn dải 0–30°).
+
 **Kết luận đúng cho C4:** vấn đề nằm ở **LSTM**, không phải MLP. Vẫn cần retrain
 (C3) để xử lý gốc. Trong lúc chờ, hoặc chạy `FORCE_RULE_ONLY=true`, hoặc — rẻ hơn
 nhiều — đặt `EDGE_PROFILE=edge` (profile này vốn đã tắt LSTM) và chỉ dùng MLP + rule.
@@ -309,6 +387,7 @@ PASS  H6: GET thresholds vẫn mở                  PASS  H6: /api/analyze khô
 | **Gỡ model khỏi git index** | `.gitignore` đã sửa pattern, nhưng 7 file trong `models/compatible/` **đang được track**. `git rm --cached` sẽ khiến người clone mới không chạy được app. Cần bạn quyết (Git LFS? release asset?) |
 | **Tách `app.js` thành ES modules** | Bạn chọn "dọn tại chỗ, giữ 1 file" vì tôi không có trình duyệt để test regression |
 | **ONNX / TensorRT** | `tools/export_onnx.py` nay tìm được model, nhưng cần `pip install tf2onnx` và chưa chạy thử |
+| **M12 — pipeline không deterministic** | Cùng một ảnh, `mp.solutions.holistic` trả EAR khác nhau qua các lần gọi: `0.1957 → 0.2270 → 0.2309 → … → 0.2399` (biên độ **0.044**), hội tụ dần. Nguyên nhân: graph legacy có smoothing/tracking nội bộ dù đã đặt `static_image_mode=True`. **Ảnh hưởng:** live mode ít bị (EAR đã qua low-pass + rule theo thời lượng 0.8s/1.2s hấp thụ được), nhưng **phân tích offline cùng một video hai lần sẽ ra kết quả khác nhau** → không tái lập được. Sửa được bằng cách tạo lại đối tượng `Holistic` mỗi frame nhưng rất chậm. Cần bạn quyết mức ưu tiên |
 | **Đổi tên 8 file `tools/test_*.py`** | Đã xử lý bằng `pytest.ini` (`testpaths=tests`) — an toàn hơn đổi tên hàng loạt |
 | **Typo tên hàm test** | `tests/test_eye_closure_rule.py:406` có tên `test_escape_valve_smoothsurvives_...`. Tôi cam kết không sửa `tests/` |
 

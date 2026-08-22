@@ -12,13 +12,19 @@ const WORKER_API_BASE = '';
 // Lưu trong sessionStorage → mỗi tab một id, F5 vẫn giữ nguyên phiên.
 const SESSION_ID = (() => {
   const KEY = 'guardian_session_id';
-  let id = sessionStorage.getItem(KEY);
+  // sessionStorage ném SecurityError khi trình duyệt chặn site-data (private
+  // mode, iframe sandbox, cookie bị chặn). Đây là code top-level: một exception
+  // ở đây giết cả file app.js → UI trắng. Luôn bọc try/catch.
+  let id = null;
+  try { id = sessionStorage.getItem(KEY); } catch (_) { /* storage bị chặn */ }
   if (!id) {
-    id = (crypto.randomUUID
+    // crypto.randomUUID chỉ có trong secure context (https hoặc localhost).
+    // Truy cập qua http://<LAN-IP>:5000 thì nó undefined → dùng fallback.
+    id = ((self.crypto && crypto.randomUUID)
       ? crypto.randomUUID()
       : 'sess-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
     ).replace(/[^a-zA-Z0-9_.-]/g, '');
-    sessionStorage.setItem(KEY, id);
+    try { sessionStorage.setItem(KEY, id); } catch (_) { /* chạy tiếp, id chỉ sống trong tab */ }
   }
   return id;
 })();
@@ -110,7 +116,33 @@ const neckBanner       = document.getElementById('neckAlarmBanner');
 const eyeBanner        = document.getElementById('eyeAlarmBanner');
 const yawnBanner       = document.getElementById('yawnAlarmBanner');
 const obsBanner        = document.getElementById('cameraObsBanner');
+const phoneBanner      = document.getElementById('phoneBanner');
+const lookAwayBanner   = document.getElementById('lookAwayBanner');
 const timeline         = document.getElementById('timeline');
+
+// ── New UI elements (redesigned) ──────────────────────────────────────────
+const alertMessage     = document.getElementById('alertMessage');
+const channelSound     = document.getElementById('channelSound');
+const channelVibration = document.getElementById('channelVibration');
+const channelBreak     = document.getElementById('channelBreak');
+const earBar           = document.getElementById('earBar');
+const earVal           = document.getElementById('earVal');
+const eyeStreakBar     = document.getElementById('eyeStreakBar');
+const eyeStreakVal     = document.getElementById('eyeStreakVal');
+const footerDot        = document.getElementById('footerDot');
+const sessionIdEl      = document.getElementById('sessionId');
+const ruleOnlyBadge    = document.getElementById('ruleOnlyBadge');
+const videoPlaceholder = document.getElementById('videoPlaceholder');
+const hudDot           = document.getElementById('hudDot');
+const hudEar           = document.getElementById('hudEar');
+const hudPerclos       = document.getElementById('hudPerclos');
+const hudFps           = document.getElementById('hudFps');
+const hudFpsRef        = document.getElementById('hudFps');
+// Level pips
+const levelPips        = [0,1,2,3,4].map(i => document.getElementById('pip' + i));
+
+// Display session ID on load
+if (sessionIdEl) sessionIdEl.textContent = SESSION_ID.slice(0, 8) + '…';
 
 // ── Audio Alert Manager (Web Audio API - 4 Levels) ─────────────────────────
 class AudioAlertManager {
@@ -334,19 +366,23 @@ btnInit.addEventListener('click', async () => {
     if (data.ok) {
       initialized = true;
       if (data.rule_only_mode) {
-        setBadge('ready', 'Rule-only');
-        setStatus('Cảnh báo: đang chạy rule-only (chưa có full ML). Chạy tools/convert_models.py');
+        setBadge('warn', 'Rule-only');
+        setStatus('⚠ Đang chạy rule-only (model ML chưa sẵn sàng). Chạy tools/convert_models.py');
+        if (ruleOnlyBadge) ruleOnlyBadge.classList.remove('hidden');
       } else {
         setBadge('ready', 'Sẵn sàng');
-        const mode = data.load_mode ? ` (${data.load_mode})` : '';
-        setStatus('Hệ thống sẵn sàng' + mode + '.');
+        const mode = data.load_mode ? ` · ${data.load_mode}` : '';
+        setStatus('✓ Hệ thống sẵn sàng' + mode + '. Có thể bắt đầu phân tích.');
+        if (ruleOnlyBadge) ruleOnlyBadge.classList.add('hidden');
       }
+      if (footerDot) footerDot.classList.remove('error');
       btnAnalyzeLive.disabled   = camStream === null;
       btnAnalyzeUpload.disabled = previewImg.classList.contains('hidden');
       btnAnalyzeVideo.disabled  = !selectedVideoFile;
     } else {
       setBadge('error', 'Lỗi');
-      setStatus('Lỗi: ' + data.error);
+      if (footerDot) footerDot.classList.add('error');
+      setStatus('✗ Lỗi khởi tạo: ' + data.error);
     }
   } catch (e) {
     setBadge('error', 'Lỗi');
@@ -405,10 +441,11 @@ function startLive() {
   btnAnalyzeLive.disabled = true;
   btnStopLive.disabled    = false;
 
-  // Show canvas (live annotated), hide video element
+  // Show canvas (live annotated), hide placeholder
+  if (videoPlaceholder) videoPlaceholder.style.display = 'none';
   annotatedCanvas.classList.remove('hidden');
-  videoOverlay.classList.add('hidden');
-  setStatus('Live phân tích đang chạy…');
+  videoOverlay.classList.remove('hidden');
+  setStatus('▶ Live phân tích đang chạy…');
 
   // Cache canvas context
   annotatedCtx = annotatedCanvas.getContext('2d');
@@ -446,6 +483,7 @@ function stopLive() {
   btnStopLive.disabled    = true;
   annotatedCanvas.classList.add('hidden');
   videoOverlay.classList.add('hidden');
+  if (videoPlaceholder) videoPlaceholder.style.display = '';
 
   if (annotatedCtx) {
     annotatedCtx.clearRect(0, 0, annotatedCanvas.width, annotatedCanvas.height);
@@ -455,6 +493,9 @@ function stopLive() {
   if (displayFpsEl)   displayFpsEl.textContent   = '—';
   if (inferenceFpsEl) inferenceFpsEl.textContent = '—';
   if (alertLatencyEl) alertLatencyEl.textContent  = '—';
+  if (hudEar)    hudEar.textContent    = '—';
+  if (hudPerclos)hudPerclos.textContent= '0%';
+  if (hudFps)    hudFps.textContent    = '—';
 
   setStatus('Đã dừng live analysis.');
 }
@@ -515,6 +556,7 @@ function startDisplayLoop() {
       if (inferenceFpsEl) inferenceFpsEl.textContent = infFps;
       if (alertLatencyEl && alertLatencyMs != null)
         alertLatencyEl.textContent = alertLatencyMs + 'ms';
+      if (hudFps) hudFps.textContent = infFps;
     }
   }
 
@@ -561,8 +603,8 @@ function onWorkerMessage(e) {
 
     // Update UI panels
     applyResult(data);
-    addTimelineSegment(data.alarm_on);
-    latencyInfo.textContent = msg.inferenceMs + ' ms';
+    addTimelineSegment(data.alarm_on, data.drowsiness_state);
+    if (latencyInfo) latencyInfo.textContent = msg.inferenceMs + ' ms';
 
     // ── Alert latency tracking ──
     // Track how long from eye closure to alarm trigger
@@ -1070,9 +1112,9 @@ async function runVideoAnalysis(width, height, fps) {
 
       processedFrames += 1;
       applyResult(result);
-      addTimelineSegment(result.alarm_on);
+      addTimelineSegment(result.alarm_on, result.drowsiness_state);
       addVideoTimelineSegment(result.alarm_on);
-      latencyInfo.textContent = Math.round(performance.now() - startedAt) + ' ms';
+      if (latencyInfo) latencyInfo.textContent = Math.round(performance.now() - startedAt) + ' ms';
       if (result.annotated_frame) await drawVideoAnnotatedFrame(result.annotated_frame);
 
       const pct = Math.min(100, (processedFrames / totalFrames) * 100);
@@ -1236,6 +1278,15 @@ async function callAnalyze(dataUrl, resetState = false, annotate = false, option
   }
 }
 
+// Alert level messages (mirrors server-side ALERT_MESSAGES)
+const ALERT_MESSAGES_VI = {
+  0: 'Tài xế tỉnh táo — Hệ thống đang giám sát',
+  1: 'Cấp 1 — Dấu hiệu mệt mỏi, nên nghỉ ngơi sớm',
+  2: 'Cấp 2 — Buồn ngủ, cần tập trung hoặc dừng xe',
+  3: 'Cấp 3 — Ngủ gật! Cần đánh thức tài xế ngay',
+  4: 'Cấp 4 — NGUY HIỂM! Không phục hồi sau cảnh báo',
+};
+
 function applyResult(data) {
   const on = data.alarm_on;
   const stateStr = (data.drowsiness_state || (on ? 'DROWSY' : 'NORMAL')).toUpperCase();
@@ -1252,49 +1303,80 @@ function applyResult(data) {
   resultPanel.dataset.state = stateLower;
 
   alertLabel.textContent    = stateStr;
-  alertProb.textContent     = 'p = ' + fmt(data.ema_prob);
+  alertProb.textContent     = 'Drowsiness Score: ' + fmt(data.drowsiness_score != null ? data.drowsiness_score : data.ema_prob);
+  if (alertMessage) alertMessage.textContent = ALERT_MESSAGES_VI[alertLvl] || '';
   mlpProb.textContent       = data.p_mlp_drowsy  != null ? fmt(data.p_mlp_drowsy)  : '—';
   lstmProb.textContent      = data.p_lstm_drowsy != null ? fmt(data.p_lstm_drowsy) : '—';
   emaProb.textContent       = fmt(data.ema_prob);
 
-  overlayStatus.textContent = stateStr;
-  overlayProb.textContent   = 'p=' + fmt(data.ema_prob);
-  overlayStatus.style.color = (alertLvl >= 2) ? '#e09090' : (alertLvl === 1 ? '#e0c060' : '#7ec494');
+  // ── Level pip indicators ──
+  levelPips.forEach((pip, i) => {
+    pip.className = 'level-pip';
+    if (i <= alertLvl) pip.classList.add('active-' + i);
+  });
 
-  // PERCLOS Gauge Update
+  // ── Channel pills ──
+  const channels = data.channels || {};
+  if (channelSound)     channelSound.classList.toggle('active', !!channels.sound);
+  if (channelVibration) channelVibration.classList.toggle('active', !!channels.vibration);
+  if (channelBreak)     channelBreak.classList.toggle('active', !!channels.break_suggested);
+
+  // ── HUD overlay ──
+  if (overlayStatus) {
+    overlayStatus.textContent = stateStr;
+    overlayStatus.style.color = alertLvl >= 3 ? 'hsl(0,78%,65%)'
+                               : alertLvl === 2 ? 'hsl(28,90%,65%)'
+                               : alertLvl === 1 ? 'hsl(42,85%,62%)'
+                               : 'hsl(145,55%,55%)';
+  }
+  if (overlayProb) overlayProb.textContent = 'p=' + fmt(data.ema_prob);
+  if (hudDot) hudDot.classList.toggle('alarm', on);
+
+  // ── PERCLOS Gauge ──
   const perclosRatio = (data.perclos_ratio != null ? data.perclos_ratio : (data.perclos || 0));
   const perclosPct   = Math.min(100, Math.max(0, perclosRatio * 100));
   if (perclosBar && perclosValue) {
     perclosValue.textContent = perclosPct.toFixed(1) + '%';
     perclosBar.style.width   = perclosPct.toFixed(1) + '%';
-    if (perclosPct >= 70) {
-      perclosBar.style.background = 'var(--microsleep)';
-    } else if (perclosPct >= 50) {
-      perclosBar.style.background = 'var(--drowsy)';
-    } else if (perclosPct >= 30) {
-      perclosBar.style.background = 'var(--fatigue)';
-    } else {
-      perclosBar.style.background = 'var(--normal)';
-    }
+    perclosBar.dataset.level = perclosPct >= 70 ? 'danger' : perclosPct >= 30 ? 'warn' : 'ok';
+    // Legacy fallback color (for browsers without data-level CSS)
+    if (perclosPct >= 70)      perclosBar.style.background = '';
+    else if (perclosPct >= 30) perclosBar.style.background = '';
+    else                       perclosBar.style.background = '';
+  }
+  if (hudPerclos) hudPerclos.textContent = perclosPct.toFixed(0) + '%';
+
+  // ── EAR metric bar ──
+  if (data.ear_smooth != null) {
+    const ear = data.ear_smooth;
+    const earPct = Math.min(100, Math.max(0, ear / 0.4 * 100)); // 0.4 = fully open
+    if (earBar)  { earBar.style.width = earPct + '%'; earBar.style.background = ear < earClosedThreshold ? 'var(--drowsy)' : 'var(--normal)'; }
+    if (earVal)  earVal.textContent = ear.toFixed(3);
+    if (hudEar)  hudEar.textContent = ear.toFixed(3);
+  } else if (data.features && data.features.ear_avg != null) {
+    const ear = data.features.ear_avg;
+    const earPct = Math.min(100, Math.max(0, ear / 0.4 * 100));
+    if (earBar)  { earBar.style.width = earPct + '%'; earBar.style.background = ear < earClosedThreshold ? 'var(--drowsy)' : 'var(--normal)'; }
+    if (earVal)  earVal.textContent = ear.toFixed(3);
+    if (hudEar)  hudEar.textContent = ear.toFixed(3);
   }
 
-  // Banners
-  if (neckBanner) {
-    if (data.neck_alarm) neckBanner.classList.remove('hidden');
-    else                 neckBanner.classList.add('hidden');
+  // ── Eye closed streak bar ──
+  if (data.eye_closed_streak_ms != null) {
+    const streakMs = data.eye_closed_streak_ms;
+    const streakPct = Math.min(100, streakMs / 2000 * 100); // 2s = 100%
+    if (eyeStreakBar) eyeStreakBar.style.width = streakPct + '%';
+    if (eyeStreakVal) eyeStreakVal.textContent = streakMs >= 1000 ? (streakMs/1000).toFixed(1) + 's' : Math.round(streakMs) + 'ms';
   }
-  if (eyeBanner) {
-    if (data.eye_alarm)  eyeBanner.classList.remove('hidden');
-    else                 eyeBanner.classList.add('hidden');
-  }
-  if (yawnBanner) {
-    if (data.yawn_alarm) yawnBanner.classList.remove('hidden');
-    else                 yawnBanner.classList.add('hidden');
-  }
-  if (obsBanner) {
-    if (data.camera_obstructed) obsBanner.classList.remove('hidden');
-    else                        obsBanner.classList.add('hidden');
-  }
+
+  // ── Banners ──
+  const toggleBanner = (el, active) => el && (active ? el.classList.remove('hidden') : el.classList.add('hidden'));
+  toggleBanner(neckBanner,    data.neck_alarm);
+  toggleBanner(eyeBanner,     data.eye_alarm);
+  toggleBanner(yawnBanner,    data.yawn_alarm);
+  toggleBanner(obsBanner,     data.camera_obstructed);
+  toggleBanner(phoneBanner,   data.phone_suspected);
+  toggleBanner(lookAwayBanner,data.looking_away);
 
   // Debug: log every 10 frames to avoid spamming
   if (DEBUG_FUSION) {
@@ -1344,13 +1426,15 @@ function fmt(v)    { return v != null ? v.toFixed(3) : '—'; }
 function fmtF(v)   { return v != null && !isNaN(v) ? v.toFixed(3) : '—'; }
 function fmtDeg(v) { return v != null && !isNaN(v) ? v.toFixed(1) + '°' : '—'; }
 
-function addTimelineSegment(alarmOn) {
+function addTimelineSegment(alarmOn, state) {
+  if (!timeline) return;
   const seg = document.createElement('div');
-  seg.className = 'tl-seg';
-  seg.dataset.alarm = alarmOn ? 'on' : 'off';
+  const stateName = (state || (alarmOn ? 'drowsy' : 'normal')).toLowerCase();
+  seg.className = 'timeline-seg state-' + stateName;
+  seg.title = stateName.toUpperCase();
   timeline.appendChild(seg);
   timeline.scrollLeft = timeline.scrollWidth;
-  while (timeline.children.length > 300) timeline.removeChild(timeline.firstChild);
+  while (timeline.children.length > 200) timeline.removeChild(timeline.firstChild);
 }
 
 function addVideoTimelineSegment(alarmOn) {
@@ -1381,5 +1465,12 @@ function formatBytes(bytes) {
 function setBadge(type, text) {
   systemBadge.className = 'badge badge-' + type;
   systemBadge.textContent = text;
+  // Update footer dot
+  if (footerDot) {
+    footerDot.classList.toggle('error', type === 'error');
+  }
 }
-function setStatus(msg) { statusBar.textContent = msg; }
+function setStatus(msg) {
+  if (statusBar) statusBar.textContent = msg;
+}
+
